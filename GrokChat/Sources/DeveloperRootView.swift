@@ -180,18 +180,39 @@ class ModelRegistry {
     
     /// Short name for compact UI (input area)
     static func shortName(for id: String) -> String {
-        if id == "grok-code-fast-1" { return "Code" }
-        if id == "grok-2-vision-1212" { return "Vision" }
+        // Exact matches first (highest priority)
+        if id == "grok-code-fast-1" { return "⚡ Code" }
+        if id == "grok-2-vision-1212" { return "👁️ Vision" }
+        if id == "grok-2-image-1212" { return "👁️ Vision" }
         if id == "grok-2-1212" { return "Grok 2" }
         if id == "grok-3-mini" { return "3 Mini" }
-        if id.contains("4-1-fast") && id.contains("non-reasoning") { return "4.1 Fast" }
-        if id.contains("4-1-fast") { return "4.1 Fast" }
-        if id.contains("grok-4") { return "Grok 4" }
-        if id.contains("grok-3") { return "Grok 3" }
-        if id.contains("vision") { return "Vision" }
-        if id.contains("fast") { return "Fast" }
+        if id == "grok-beta" { return "Beta" }
+
+        // Grok 4.1 Fast Series (must check BEFORE generic 4-fast)
+        if id.contains("4-1-fast") {
+            if id.contains("non-reasoning") { return "4.1 ⚡" }
+            if id.contains("reasoning") { return "4.1 🧠" }
+            return "4.1"
+        }
+
+        // Grok 4 Fast Series (check after 4-1)
+        if id.contains("4-fast") && !id.contains("4-1") {
+            if id.contains("non-reasoning") { return "4 ⚡" }
+            if id.contains("reasoning") { return "4 🧠" }
+            return "4 Fast"
+        }
+
+        // Grok 4 (non-fast variants)
+        if id.contains("grok-4") && !id.contains("fast") { return "Grok 4 🧠" }
+
+        // Grok 3 series
+        if id.contains("grok-3") && !id.contains("mini") { return "Grok 3" }
+
+        // Generic fallbacks
+        if id.contains("vision") || id.contains("image") { return "Vision" }
         if id.contains("mini") { return "Mini" }
-        // Fallback: take first meaningful word
+
+        // Final fallback: extract version number
         let parts = id.replacingOccurrences(of: "grok-", with: "").split(separator: "-")
         return String(parts.first ?? "Grok").capitalized
     }
@@ -288,20 +309,36 @@ class ModelRegistry {
     static func modelDescription(for id: String) -> String {
         let m = id.lowercased()
 
-        // Grok Code
+        // Grok Code - Lightning fast for coding
         if m.contains("code") {
-            return "Code-specialized • Fast responses"
+            return "⚡ Lightning fast for coding • 256k context"
         }
 
-        // Grok 4 Series
+        // Grok 4.1 Fast Series (Latest - November 2025)
         if m.contains("4-1-fast") || m.contains("4.1-fast") {
             if m.contains("non-reasoning") {
-                return "Fast responses • No extended reasoning"
+                return "🚀 Latest fast model • 2M context • No reasoning"
             }
-            return "Fast responses • No extended reasoning"
+            if m.contains("reasoning") {
+                return "🧠 Latest fast model • 2M context • With reasoning"
+            }
+            return "🚀 Latest fast model • 2M context"
         }
+
+        // Grok 4 Fast Series
+        if m.contains("4-fast") || m.contains("4.fast") {
+            if m.contains("non-reasoning") {
+                return "⚡ Fast responses • 2M context • No reasoning"
+            }
+            if m.contains("reasoning") {
+                return "🧠 Fast with reasoning • 2M context"
+            }
+            return "⚡ Fast responses • 2M context"
+        }
+
+        // Grok 4 (Premium)
         if m.contains("grok-4") && !m.contains("fast") {
-            return "Extended reasoning • Premium quality"
+            return "🏆 Best quality • Extended reasoning • 256k context"
         }
 
         // Grok 3 Series
@@ -314,40 +351,260 @@ class ModelRegistry {
 
         // Grok 2 Series
         if m.contains("vision") || m.contains("image") {
-            return "Image understanding • Multimodal"
+            return "👁️ Image understanding • Multimodal • 131k context"
         }
         if m.contains("grok-2") {
-            return "Extended reasoning • Balanced"
+            return "Legacy model • 131k context"
         }
 
         // Default
         return "General purpose"
     }
     
-    static func resolveModel(selected: String, hasImage: Bool, textLength: Int) -> String {
-        // SAFETY OVERRIDE: If image is present, ALWAYS force logic to find a vision model
-        // even if user manually selected a text-only model.
-        if hasImage && !supportsVision(selected) {
-             // Prefer grok-2-vision if we just want "a vision model"
-             return "grok-2-vision-1212"
+    /// Task complexity level for model selection
+    enum TaskComplexity: Int, Comparable {
+        case simple = 1      // Basic questions, greetings
+        case moderate = 2    // Standard coding, explanations
+        case complex = 3     // Multi-step reasoning, complex coding
+        case vision = 4      // Image-related (highest priority)
+
+        static func < (lhs: TaskComplexity, rhs: TaskComplexity) -> Bool {
+            return lhs.rawValue < rhs.rawValue
         }
-        
+    }
+
+    /// Detected task type for model selection
+    struct TaskAnalysis {
+        var isCoding: Bool = false
+        var isReasoning: Bool = false
+        var isVision: Bool = false
+        var complexity: TaskComplexity = .simple
+        var codingScore: Int = 0      // Number of coding keywords matched
+        var reasoningScore: Int = 0   // Number of reasoning keywords matched
+        var detectedKeywords: [String] = []
+    }
+
+    /// Resolves which model to use based on selection, task type, and available models
+    /// - Parameters:
+    ///   - selected: The user-selected model (or "auto")
+    ///   - hasImage: Whether the message includes an image
+    ///   - textLength: The length of the input text
+    ///   - messageText: The actual message text for task type detection
+    ///   - availableModels: List of models available from the API (for validation)
+    /// - Returns: A validated model ID that should work with the API
+    static func resolveModel(selected: String, hasImage: Bool, textLength: Int, messageText: String = "", availableModels: [String] = []) -> String {
+
+        // LATEST xAI models (December 2025) - prioritize newest & fastest
+        let knownGoodModels = [
+            // Latest Grok 4.1 Fast models (NEW - November 2025)
+            "grok-4-1-fast-reasoning",      // Latest fast + reasoning (2M context)
+            "grok-4-1-fast-non-reasoning",  // Latest fast without reasoning (2M context)
+            // Grok 4 Fast models
+            "grok-4-fast-reasoning",        // Fast + reasoning (2M context)
+            "grok-4-fast-non-reasoning",    // Fast without reasoning (2M context)
+            // Specialized models
+            "grok-code-fast-1",             // Lightning fast for coding (256k context)
+            "grok-4",                       // Best overall model (256k context)
+            // Vision model
+            "grok-2-vision-1212",           // Vision model for images
+            // Legacy fallbacks
+            "grok-2-1212",                  // Legacy fallback
+            "grok-beta"                     // Legacy fallback
+        ]
+
+        // Model preferences by task type - PRIORITIZE LATEST MODELS
+        let visionModels = ["grok-2-vision-1212"]  // Only vision model available
+        let codingModels = [
+            "grok-code-fast-1",             // BEST for coding - lightning fast
+            "grok-4-1-fast-reasoning",      // Latest fast with reasoning
+            "grok-4-fast-reasoning",        // Fast with reasoning
+            "grok-4",                       // Best overall
+            "grok-2-1212"                   // Legacy fallback
+        ]
+        let reasoningModels = [
+            "grok-4-1-fast-reasoning",      // Latest fast with reasoning
+            "grok-4-fast-reasoning",        // Fast with reasoning
+            "grok-4",                       // Best overall
+            "grok-4-1-fast-non-reasoning",  // Latest fast
+            "grok-2-1212"                   // Legacy fallback
+        ]
+        let defaultModels = [
+            "grok-4-1-fast-non-reasoning",  // Latest fast (best balance)
+            "grok-4-fast-non-reasoning",    // Fast
+            "grok-4-1-fast-reasoning",      // Latest fast with reasoning
+            "grok-4",                       // Best overall
+            "grok-2-1212"                   // Legacy fallback
+        ]
+
+        // Analyze the task
+        let analysis = analyzeTask(messageText: messageText, hasImage: hasImage, textLength: textLength)
+
+        #if DEBUG
+        print("🤖 Auto Model Selection:")
+        print("   • User selected: \(selected)")
+        print("   • Has image: \(hasImage)")
+        print("   • Text length: \(textLength)")
+        print("   • Available models: \(availableModels.count)")
+        print("   📊 Task Analysis:")
+        print("      • Coding: \(analysis.isCoding) (score: \(analysis.codingScore))")
+        print("      • Reasoning: \(analysis.isReasoning) (score: \(analysis.reasoningScore))")
+        print("      • Vision: \(analysis.isVision)")
+        print("      • Complexity: \(analysis.complexity)")
+        if !analysis.detectedKeywords.isEmpty {
+            print("      • Keywords: \(analysis.detectedKeywords.prefix(5).joined(separator: ", "))")
+        }
+        #endif
+
+        // Helper to find a valid model from preferences
+        func findValidModel(preferring preferences: [String], reason: String) -> String {
+            let safeModels = availableModels.isEmpty ? knownGoodModels : availableModels.filter { knownGoodModels.contains($0) }
+
+            for model in preferences {
+                if safeModels.contains(model) || availableModels.isEmpty {
+                    #if DEBUG
+                    print("   ✅ Selected '\(model)' for: \(reason)")
+                    #endif
+                    return model
+                }
+            }
+
+            let fallback = safeModels.first ?? "grok-2-1212"
+            #if DEBUG
+            print("   ⚠️ Using fallback: \(fallback) (reason: \(reason))")
+            #endif
+            return fallback
+        }
+
+        // =====================================================
+        // MANUAL MODEL SELECTION - ALWAYS RESPECT USER CHOICE
+        // =====================================================
         if selected != "auto" {
+            // If user manually selected a model, use it (with one exception: vision)
+
+            // Only override for vision if the selected model can't handle images
+            if hasImage && !supportsVision(selected) {
+                #if DEBUG
+                print("   ⚠️ User model '\(selected)' can't handle images, switching to vision model")
+                #endif
+                return findValidModel(preferring: visionModels, reason: "🖼️ image requires vision model")
+            }
+
+            // Use the user's selected model directly - even if not in known-good list
+            // The API will return an error if it's invalid, which triggers fallback
+            #if DEBUG
+            print("   ✅ Using user-selected model: \(selected)")
+            #endif
             return selected
         }
-        
-        // SMART AUTO LOGIC
+
+        // =====================================================
+        // AUTO MODE LOGIC - Smart selection based on task
+        // =====================================================
+
+        // PRIORITY 1: Vision tasks (image attached)
+        if analysis.isVision {
+            return findValidModel(preferring: visionModels, reason: "🖼️ vision task (image attached)")
+        }
+
+        // PRIORITY 2: Coding tasks - use grok-code-fast-1
+        if analysis.isCoding {
+            return findValidModel(preferring: codingModels, reason: "💻 coding task (score: \(analysis.codingScore))")
+        }
+
+        // PRIORITY 3: Complex tasks (reasoning + long messages)
+        if analysis.isReasoning || analysis.complexity == .complex || textLength > 1500 {
+            return findValidModel(preferring: reasoningModels, reason: "🧠 reasoning/complex task")
+        }
+
+        // PRIORITY 4: Default - general tasks
+        return findValidModel(preferring: defaultModels, reason: "💬 general query")
+    }
+
+    /// Analyzes the message to determine task type and complexity
+    private static func analyzeTask(messageText: String, hasImage: Bool, textLength: Int) -> TaskAnalysis {
+        var analysis = TaskAnalysis()
+        let lowerText = messageText.lowercased()
+
+        // Vision detection
+        analysis.isVision = hasImage
         if hasImage {
-            return "grok-2-vision-1212"
+            analysis.complexity = .vision
         }
-        
-        // Complex / Reasoning Task Heuristic (Long context or "Explain"/"Refactor")
-        if textLength > 1500 {
-            return "grok-2-1212"
+
+        // Coding keywords with weights
+        let codingKeywords: [(keyword: String, weight: Int)] = [
+            // Programming languages (high weight)
+            ("javascript", 2), ("typescript", 2), ("python", 2), ("swift", 2),
+            ("java", 2), ("kotlin", 2), ("rust", 2), ("go", 2), ("ruby", 2),
+            ("php", 2), ("c++", 2), ("c#", 2), ("sql", 2),
+            // Frameworks (high weight)
+            ("react", 2), ("next.js", 2), ("nextjs", 2), ("vue", 2), ("angular", 2),
+            ("node", 2), ("express", 2), ("django", 2), ("flask", 2),
+            ("swiftui", 2), ("tailwind", 2), ("bootstrap", 2),
+            // Actions (medium weight)
+            ("implement", 1), ("code", 1), ("debug", 1), ("refactor", 1),
+            ("build", 1), ("deploy", 1), ("compile", 1), ("test", 1),
+            ("fix the bug", 2), ("fix this", 1), ("fix error", 2),
+            // Concepts (lower weight)
+            ("function", 1), ("class", 1), ("api", 1), ("endpoint", 1),
+            ("database", 1), ("query", 1), ("component", 1), ("module", 1),
+            ("html", 1), ("css", 1), ("json", 1), ("xml", 1),
+            ("website", 1), ("web app", 2), ("mobile app", 2), ("app", 1),
+            ("script", 1), ("program", 1), ("algorithm", 1),
+            ("create a", 1), ("write a", 1), ("make a", 1),
+            ("frontend", 1), ("backend", 1), ("fullstack", 1),
+            ("git", 1), ("npm", 1), ("yarn", 1), ("package", 1)
+        ]
+
+        // Reasoning keywords with weights
+        let reasoningKeywords: [(keyword: String, weight: Int)] = [
+            // Deep analysis (high weight)
+            ("explain in detail", 3), ("step by step", 3), ("think through", 3),
+            ("reasoning", 2), ("analyze", 2), ("evaluate", 2),
+            ("what is the difference", 2), ("compare and contrast", 2),
+            ("pros and cons", 2), ("advantages and disadvantages", 2),
+            // Questions requiring thought (medium weight)
+            ("why does", 1), ("why is", 1), ("how does", 1), ("how is", 1),
+            ("what causes", 1), ("explain", 1), ("describe", 1),
+            ("compare", 1), ("contrast", 1), ("analyze", 1),
+            // Complex topics (medium weight)
+            ("theory", 1), ("concept", 1), ("principle", 1),
+            ("understand", 1), ("meaning", 1), ("significance", 1),
+            ("implications", 2), ("consequences", 2),
+            ("in depth", 2), ("comprehensive", 2), ("thorough", 2)
+        ]
+
+        // Score coding keywords
+        for (keyword, weight) in codingKeywords {
+            if lowerText.contains(keyword) {
+                analysis.codingScore += weight
+                analysis.detectedKeywords.append(keyword)
+            }
         }
-        
-        // Default: Speed & Code
-        return "grok-code-fast-1"
+        analysis.isCoding = analysis.codingScore >= 2
+
+        // Score reasoning keywords
+        for (keyword, weight) in reasoningKeywords {
+            if lowerText.contains(keyword) {
+                analysis.reasoningScore += weight
+                analysis.detectedKeywords.append(keyword)
+            }
+        }
+        analysis.isReasoning = analysis.reasoningScore >= 2
+
+        // Determine complexity
+        if !analysis.isVision {
+            let totalScore = analysis.codingScore + analysis.reasoningScore
+            if totalScore >= 6 || (analysis.isCoding && analysis.isReasoning) {
+                analysis.complexity = .complex
+            } else if totalScore >= 2 || textLength > 500 {
+                analysis.complexity = .moderate
+            } else {
+                analysis.complexity = .simple
+            }
+        }
+
+        return analysis
     }
     
     /// Returns the context window size (in tokens) for a given model
@@ -421,7 +678,8 @@ struct ChatMessage: Identifiable, Equatable, Codable {
     var content: String
     var isThinking: Bool = false
     var imageData: Data? = nil // For Vision support
-    var usedModel: String? // Track which model generated this
+    var usedModel: String? // Track which model generated this (final model)
+    var modelsAttempted: [String]? // Track all models attempted (for fallback display)
     var toolAction: String? = nil // Tool action executed (e.g., "rm file.md")
     var toolOutput: String? = nil // Tool execution result
     var isHiddenFromUI: Bool = false // Hide from UI but keep for API context
@@ -547,6 +805,9 @@ struct DeveloperRootView: View {
     @State private var fileSystemMonitor: DispatchSourceFileSystemObject?
     @State private var monitoredFileDescriptor: Int32?
     @State private var refreshDebounceTimer: Timer?
+
+    // Background Process Management
+    @State private var runningProcesses: [UUID: Process] = [:]
 
     // Dynamic Colors
     var bgDark: Color { Color(nsColor: .windowBackgroundColor) }
@@ -2724,21 +2985,35 @@ struct DeveloperRootView: View {
                 do {
                     let decoded = try JSONDecoder().decode(ModelResponse.self, from: data)
                     self.availableModels = decoded.data.map { $0.id }.sorted()
-                    
+
+                    // Debug: Log available models
+                    #if DEBUG
+                    print("📋 Available models from API (\(self.availableModels.count)):")
+                    for model in self.availableModels {
+                        print("   • \(model)")
+                    }
+                    #endif
+
                     // Cache context window limits from API (if provided)
                     for model in decoded.data {
                         if let contextLength = model.context_length {
                             ModelRegistry.modelContextLimits[model.id] = contextLength
                         }
                     }
-                    
+
                     // Keep 'auto' if selected, otherwise fallback check
                     if self.selectedModel != "auto" && !self.availableModels.contains(self.selectedModel) {
+                        #if DEBUG
+                        print("⚠️ Selected model '\(self.selectedModel)' not available, switching to auto")
+                        #endif
                         self.selectedModel = "auto"
                     }
                 } catch {
                      // Silent fail or simple message
                      self.errorMessage = "Failed to parse"
+                     #if DEBUG
+                     print("❌ Failed to parse models response: \(error)")
+                     #endif
                 }
             }
         }.resume()
@@ -2751,7 +3026,6 @@ struct DeveloperRootView: View {
         inputMessage = ""
         inputHeight = 24 // Reset to minimum height
         isSending = true
-        requestStatus = "Sending request..."
         requestStartTime = Date()
 
         // 1. Add User Message
@@ -2768,7 +3042,17 @@ struct DeveloperRootView: View {
         messages.append(ChatMessage(id: assistantMsgId, role: "assistant", content: "", isThinking: true))
 
         // 3. Resolve Model (Smart Selection) - Check the user message's imageData, not inputImage (already cleared)
-        let modelToUse = ModelRegistry.resolveModel(selected: selectedModel, hasImage: newUserMsg.imageData != nil, textLength: userMsg.count)
+        // Pass availableModels and messageText to ensure smart model selection based on task type
+        let modelToUse = ModelRegistry.resolveModel(
+            selected: selectedModel,
+            hasImage: newUserMsg.imageData != nil,
+            textLength: userMsg.count,
+            messageText: userMsg,
+            availableModels: availableModels
+        )
+
+        // Set initial status
+        requestStatus = "Connecting..."
 
         performAPICall(assistantMsgId: assistantMsgId, modelID: modelToUse)
     }
@@ -2879,9 +3163,9 @@ struct DeveloperRootView: View {
         
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
 
-        // Update status
+        // Update status (no model name - that appears after response)
         DispatchQueue.main.async {
-            self.requestStatus = "Waiting for response..."
+            self.requestStatus = "Thinking..."
         }
 
         // Start a timer to update status with elapsed time for long requests
@@ -2892,8 +3176,10 @@ struct DeveloperRootView: View {
                     return
                 }
                 let elapsed = Int(Date().timeIntervalSince(startTime))
-                if elapsed > 10 {
-                    self.requestStatus = "Still waiting... (\(elapsed)s)"
+                if elapsed > 30 {
+                    self.requestStatus = "Still processing... (\(elapsed)s)"
+                } else if elapsed > 10 {
+                    self.requestStatus = "Thinking... (\(elapsed)s)"
                 }
             }
         }
@@ -2917,7 +3203,11 @@ struct DeveloperRootView: View {
                     return
                 }
 
-                // Track model used
+                // Track model used (append to attempted list, set as final)
+                if messages[index].modelsAttempted == nil {
+                    messages[index].modelsAttempted = []
+                }
+                messages[index].modelsAttempted?.append(modelID)
                 messages[index].usedModel = modelID
 
                 // Handle network errors
@@ -2955,6 +3245,37 @@ struct DeveloperRootView: View {
                         userFriendlyError = "Authentication failed. Please check your API key in Settings."
                     } else if httpResponse.statusCode == 429 {
                         userFriendlyError = "Rate limit exceeded. Please wait a moment and try again."
+                    } else if httpResponse.statusCode == 400 {
+                        // Model might not be available - try fallback with latest models first
+                        #if DEBUG
+                        print("⚠️ 400 error with model '\(modelID)': \(errorMsg)")
+                        print("   Available models: \(self.availableModels)")
+                        #endif
+
+                        // Fallback models in order of preference (latest first, then legacy)
+                        let fallbackModels = [
+                            "grok-4-1-fast-non-reasoning",  // Latest fast
+                            "grok-4-fast-non-reasoning",    // Fast
+                            "grok-code-fast-1",             // Coding fast
+                            "grok-2-1212",                  // Legacy reliable
+                            "grok-beta"                     // Legacy fallback
+                        ]
+
+                        // Try to find a working fallback model
+                        for fallbackModel in fallbackModels {
+                            if fallbackModel != modelID {
+                                #if DEBUG
+                                print("   🔄 Retrying with fallback model: \(fallbackModel)")
+                                #endif
+                                messages[index].content = ""
+                                messages[index].isThinking = true
+                                requestStatus = "Retrying..."
+                                self.performAPICall(assistantMsgId: assistantMsgId, modelID: fallbackModel)
+                                return
+                            }
+                        }
+
+                        userFriendlyError = "Model '\(modelID)' is not available. \(errorMsg)"
                     } else if httpResponse.statusCode >= 500 {
                         userFriendlyError = "xAI server error (\(httpResponse.statusCode)). Please try again in a moment."
                     } else {
@@ -2979,7 +3300,7 @@ struct DeveloperRootView: View {
                 }
 
                 // Update status
-                requestStatus = "Processing response..."
+                requestStatus = "Processing..."
 
                 do {
                     // Response Structs
@@ -3036,39 +3357,54 @@ struct DeveloperRootView: View {
                         // Parse JSON from content block
                         if let action = parseToolAction(from: content) {
                             messages[index].isThinking = false
-
-                            // Update status for tool execution
-                            requestStatus = "Executing tool..."
-
-                            // 1. Run Action
-                            let output = executeToolAction(action)
-
-                            // 2. Store tool execution data in the assistant's message for UI display
                             messages[index].toolAction = action.description
-                            messages[index].toolOutput = output
 
-                            // 3. Create a hidden user message with the output for the API
-                            // This message is for the API to analyze, but won't be displayed in UI
-                            var hiddenMessage: ChatMessage
-                            if shouldShowToolOutput(action, output: output) {
-                                hiddenMessage = ChatMessage(role: "user", content: "Terminal Output:\n```\n\(output)\n```\nAnalyze this output.", isHiddenFromUI: true)
-                            } else {
-                                hiddenMessage = ChatMessage(role: "user", content: "Tool executed successfully. Output: \(output)", isHiddenFromUI: true)
+                            // Update status for tool execution (simple, generic messages)
+                            switch action {
+                            case .terminal:
+                                requestStatus = "Running command..."
+                            case .readFile:
+                                requestStatus = "Reading file..."
+                            case .writeFile:
+                                requestStatus = "Writing file..."
+                            case .fetchWeb:
+                                requestStatus = "Fetching..."
+                            case .searchWeb:
+                                requestStatus = "Searching..."
+                            case .openURL:
+                                requestStatus = "Opening..."
+                            case .checkServerStatus:
+                                requestStatus = "Checking..."
                             }
-                            messages.append(hiddenMessage)
 
-                            // SAVE STATE
-                            if let idx = sessions.firstIndex(where: { $0.id == currentSessionId }) {
-                                sessions[idx].messages = messages
-                                sessions[idx].lastModified = Date()
-                                PersistenceController.shared.save(sessions: sessions)
+                            // 1. Run Action ASYNCHRONOUSLY to not block UI
+                            executeToolActionAsync(action) { [self] output in
+                                // 2. Store tool execution data in the assistant's message for UI display
+                                messages[index].toolOutput = output
+
+                                // 3. Create a hidden user message with the output for the API
+                                // This message is for the API to analyze, but won't be displayed in UI
+                                var hiddenMessage: ChatMessage
+                                if shouldShowToolOutput(action, output: output) {
+                                    hiddenMessage = ChatMessage(role: "user", content: "Terminal Output:\n```\n\(output)\n```\nAnalyze this output.", isHiddenFromUI: true)
+                                } else {
+                                    hiddenMessage = ChatMessage(role: "user", content: "Tool executed successfully. Output: \(output)", isHiddenFromUI: true)
+                                }
+                                messages.append(hiddenMessage)
+
+                                // SAVE STATE
+                                if let idx = sessions.firstIndex(where: { $0.id == currentSessionId }) {
+                                    sessions[idx].messages = messages
+                                    sessions[idx].lastModified = Date()
+                                    PersistenceController.shared.save(sessions: sessions)
+                                }
+
+                                // 4. Recursive Call to interpret result
+                                requestStatus = "Analyzing..."
+                                let nextId = UUID()
+                                messages.append(ChatMessage(id: nextId, role: "assistant", content: "", isThinking: true))
+                                performAPICall(assistantMsgId: nextId, modelID: modelID)
                             }
-
-                            // 4. Recursive Call to interpret result
-                            requestStatus = "Analyzing results..."
-                            let nextId = UUID()
-                            messages.append(ChatMessage(id: nextId, role: "assistant", content: "", isThinking: true))
-                            performAPICall(assistantMsgId: nextId, modelID: modelID)
                             return
                         }
                     }
@@ -3109,6 +3445,8 @@ struct DeveloperRootView: View {
         case writeFile(String, String)
         case fetchWeb(String)
         case searchWeb(String)
+        case openURL(String)           // Open URL in browser (with localhost handling)
+        case checkServerStatus(Int)    // Check if a port is responding
 
         // Human-readable description for UI display
         var description: String {
@@ -3123,6 +3461,10 @@ struct DeveloperRootView: View {
                 return "Fetch \(url)"
             case .searchWeb(let query):
                 return "Search: \(query)"
+            case .openURL(let url):
+                return "Open \(url)"
+            case .checkServerStatus(let port):
+                return "Check localhost:\(port)"
             }
         }
     }
@@ -3142,8 +3484,9 @@ struct DeveloperRootView: View {
             let content: String?
             let url: String?
             let query: String?
+            let port: Int?
         }
-        
+
         do {
             let payload = try JSONDecoder().decode(ToolPayload.self, from: data)
             switch payload.tool {
@@ -3157,6 +3500,10 @@ struct DeveloperRootView: View {
                 if let url = payload.url { return .fetchWeb(url) }
             case "search_web":
                 if let query = payload.query { return .searchWeb(query) }
+            case "open_url", "open_browser":
+                if let url = payload.url { return .openURL(url) }
+            case "check_server", "check_port":
+                if let port = payload.port { return .checkServerStatus(port) }
             default:
                 return nil
             }
@@ -3289,6 +3636,55 @@ struct DeveloperRootView: View {
         return (false, "Command '\(baseCommand)' is not in the allowed list. Disable Safety Mode to run arbitrary commands.")
     }
 
+    // MARK: - Background Process Management
+
+    /// Detect if a command is a long-running server command
+    private func isServerCommand(_ command: String) -> Bool {
+        let serverPatterns = [
+            "npm run dev", "npm start", "npm run start",
+            "yarn dev", "yarn start",
+            "pnpm dev", "pnpm start",
+            "npx next dev", "next dev",
+            "python -m http.server", "python3 -m http.server",
+            "flask run", "uvicorn", "gunicorn",
+            "node server", "nodemon",
+            "cargo run", "go run",
+            "php -S", "ruby -run"
+        ]
+        let lowercased = command.lowercased()
+        return serverPatterns.contains { lowercased.contains($0) }
+    }
+
+    /// Check if a port is currently in use on localhost
+    private func isPortInUse(port: Int) -> Bool {
+        let task = Process()
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = pipe
+        task.launchPath = "/bin/zsh"
+        task.arguments = ["-c", "lsof -i :\(port) | grep LISTEN"]
+
+        do {
+            try task.run()
+            task.waitUntilExit()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            let output = String(data: data, encoding: .utf8) ?? ""
+            return !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        } catch {
+            return false
+        }
+    }
+
+    /// Async version of executeToolAction - runs on background thread
+    func executeToolActionAsync(_ action: ToolAction, completion: @escaping (String) -> Void) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = self.executeToolAction(action)
+            DispatchQueue.main.async {
+                completion(result)
+            }
+        }
+    }
+
     func executeToolAction(_ action: ToolAction) -> String {
         switch action {
         case .terminal(let command):
@@ -3310,8 +3706,123 @@ struct DeveloperRootView: View {
 
             do {
                 try task.run()
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                let output = String(data: data, encoding: .utf8) ?? "No output"
+
+                // Check if this is a server/long-running command
+                if isServerCommand(command) {
+                    // For server commands, don't wait - just start and return early
+                    let processId = UUID()
+                    DispatchQueue.main.async {
+                        self.runningProcesses[processId] = task
+                    }
+
+                    // Extract port from command
+                    var port = "3000" // default
+                    if let portMatch = command.range(of: #"-p\s*(\d+)"#, options: .regularExpression) ??
+                                      command.range(of: #"--port\s*(\d+)"#, options: .regularExpression) ??
+                                      command.range(of: #":(\d{4,5})"#, options: .regularExpression) {
+                        let portStr = String(command[portMatch])
+                        if let nums = portStr.range(of: #"\d+"#, options: .regularExpression) {
+                            port = String(portStr[nums])
+                        }
+                    }
+
+                    // Check if port is already in use BEFORE waiting
+                    let portInUse = isPortInUse(port: Int(port) ?? 3000)
+
+                    // Give the server a moment to start and check for immediate errors
+                    Thread.sleep(forTimeInterval: 2.5)
+
+                    // Read any initial output (non-blocking)
+                    let fileHandle = pipe.fileHandleForReading
+                    let availableData = fileHandle.availableData
+                    let initialOutput = String(data: availableData, encoding: .utf8) ?? ""
+
+                    if task.isRunning {
+                        return """
+                        ✅ Server started successfully!
+
+                        🌐 The development server is now running at: http://localhost:\(port)
+
+                        Initial output:
+                        ```
+                        \(initialOutput.isEmpty ? "(Server is starting...)" : String(initialOutput.prefix(500)))
+                        ```
+
+                        💡 The server will continue running in the background.
+
+                        **Useful commands:**
+                        • Check status: `lsof -i :\(port)`
+                        • Stop server: `pkill -f "\(command.prefix(30))"`
+                        """
+                    } else {
+                        // Server exited immediately - probably an error
+                        let remainingData = fileHandle.readDataToEndOfFile()
+                        let fullOutput = initialOutput + (String(data: remainingData, encoding: .utf8) ?? "")
+
+                        // Detect port conflict
+                        if portInUse || fullOutput.lowercased().contains("address already in use") ||
+                           fullOutput.lowercased().contains("eaddrinuse") ||
+                           fullOutput.lowercased().contains("port") && fullOutput.lowercased().contains("already") {
+                            return """
+                            ⚠️ Port \(port) is already in use!
+
+                            Another process is using this port. You have a few options:
+
+                            **Option 1: Kill the existing process**
+                            ```bash
+                            lsof -ti :\(port) | xargs kill -9
+                            ```
+
+                            **Option 2: Use a different port**
+                            ```bash
+                            \(command) --port \(Int(port)! + 1)
+                            ```
+
+                            **Option 3: Find what's using the port**
+                            ```bash
+                            lsof -i :\(port)
+                            ```
+
+                            Original error:
+                            ```
+                            \(fullOutput.prefix(300))
+                            ```
+                            """
+                        }
+
+                        return "❌ Server failed to start:\n```\n\(fullOutput)\n```"
+                    }
+                }
+
+                // For regular commands, wait with timeout
+                let timeout: TimeInterval = 30.0
+                let deadline = Date().addingTimeInterval(timeout)
+
+                var outputData = Data()
+                let fileHandle = pipe.fileHandleForReading
+
+                // Read with timeout
+                while task.isRunning && Date() < deadline {
+                    let available = fileHandle.availableData
+                    if !available.isEmpty {
+                        outputData.append(available)
+                    }
+                    Thread.sleep(forTimeInterval: 0.1)
+                }
+
+                // If still running after timeout, get what we have
+                if task.isRunning {
+                    task.terminate()
+                    let remaining = fileHandle.availableData
+                    outputData.append(remaining)
+                    let output = String(data: outputData, encoding: .utf8) ?? "No output"
+                    return "⚠️ Command timed out after \(Int(timeout))s. Partial output:\n\(output)"
+                }
+
+                // Command completed normally
+                let remaining = fileHandle.readDataToEndOfFile()
+                outputData.append(remaining)
+                let output = String(data: outputData, encoding: .utf8) ?? "No output"
 
                 // Check if this was a git command that might affect repository state
                 let gitStateCommands = ["git checkout", "git branch", "git switch", "git init", "git commit", "git add", "git reset", "git restore"]
@@ -3491,7 +4002,114 @@ struct DeveloperRootView: View {
             task.resume()
             semaphore.wait()
             return result
+
+        case .openURL(let urlString):
+            // Open URL in browser with localhost handling
+            return openURLInBrowser(urlString)
+
+        case .checkServerStatus(let port):
+            // Check if localhost port is responding
+            return checkLocalhostPort(port)
         }
+    }
+
+    /// Opens a URL in the default browser with smart localhost handling
+    /// For localhost URLs, checks if server is running first and provides helpful errors
+    private func openURLInBrowser(_ urlString: String) -> String {
+        guard let url = URL(string: urlString) else {
+            return "❌ Invalid URL: \(urlString)"
+        }
+
+        // Check if this is a localhost URL
+        let isLocalhost = url.host == "localhost" || url.host == "127.0.0.1"
+
+        if isLocalhost, let port = url.port {
+            // Check if server is actually running
+            let portCheck = checkLocalhostPort(port)
+
+            if portCheck.contains("not responding") || portCheck.contains("Connection refused") {
+                return """
+                ⚠️ Cannot open \(urlString)
+
+                The development server on port \(port) is not running yet.
+
+                **Suggestions:**
+                1. Start the server first: `npm run dev` or similar
+                2. Check if port \(port) is already in use: `lsof -i :\(port)`
+                3. Wait a few seconds for the server to start
+
+                💡 Tip: Start the server before trying to open the browser.
+                """
+            }
+        }
+
+        // Open in default browser
+        DispatchQueue.main.async {
+            NSWorkspace.shared.open(url)
+        }
+
+        if isLocalhost {
+            return "✅ Opened \(urlString) in your default browser\n\n💡 Development server detected - refresh the browser if page doesn't load immediately."
+        }
+
+        return "✅ Opened \(urlString) in your default browser"
+    }
+
+    /// Checks if a localhost port is responding
+    /// Useful for verifying development servers are running before opening browser
+    private func checkLocalhostPort(_ port: Int) -> String {
+        let urlString = "http://localhost:\(port)"
+        guard let url = URL(string: urlString) else {
+            return "❌ Invalid port: \(port)"
+        }
+
+        var result = "⏳ Checking localhost:\(port)..."
+        let semaphore = DispatchSemaphore(value: 0)
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "HEAD"
+        request.timeoutInterval = 3.0  // Quick timeout
+
+        let task = URLSession.shared.dataTask(with: request) { _, response, error in
+            if let error = error {
+                let nsError = error as NSError
+                if nsError.code == NSURLErrorCannotConnectToHost ||
+                   nsError.code == -61 || // Connection refused
+                   nsError.code == NSURLErrorTimedOut {
+                    result = """
+                    ❌ Server on port \(port) is not responding
+
+                    **Possible causes:**
+                    • No server running on this port
+                    • Server is still starting up
+                    • Server crashed or was stopped
+
+                    **To check:**
+                    ```bash
+                    lsof -i :\(port)
+                    ```
+                    """
+                } else {
+                    result = "⚠️ Connection error: \(error.localizedDescription)"
+                }
+            } else if let httpResponse = response as? HTTPURLResponse {
+                result = """
+                ✅ Server on port \(port) is running!
+
+                • Status: \(httpResponse.statusCode)
+                • URL: \(urlString)
+
+                Ready to open in browser.
+                """
+            } else {
+                result = "✅ Server on port \(port) appears to be running"
+            }
+            semaphore.signal()
+        }
+
+        task.resume()
+        semaphore.wait()
+        return result
     }
 
     /// Determines whether tool output should be displayed in the chat interface
@@ -3559,6 +4177,14 @@ struct DeveloperRootView: View {
 
         case .searchWeb(_):
             // Show search results as they're useful to see
+            return true
+
+        case .openURL(_):
+            // Show URL open result (especially helpful for localhost errors)
+            return true
+
+        case .checkServerStatus(_):
+            // Show server status check results
             return true
         }
     }
@@ -3682,8 +4308,33 @@ struct MessageBubble: View {
                             
                             // Footer: Copy Button & Model Info
                             HStack {
-                                if let model = message.usedModel {
-                                    Text(ModelRegistry.friendlyName(for: model))
+                                // Show model(s) used
+                                if let attempted = message.modelsAttempted, attempted.count > 1 {
+                                    // Multiple models were tried (fallback occurred)
+                                    HStack(spacing: 4) {
+                                        ForEach(attempted, id: \.self) { model in
+                                            if model == message.usedModel {
+                                                // Final successful model
+                                                Text(ModelRegistry.shortName(for: model))
+                                                    .font(.system(size: 9))
+                                                    .foregroundStyle(.secondary)
+                                            } else {
+                                                // Failed model (strikethrough)
+                                                Text(ModelRegistry.shortName(for: model))
+                                                    .font(.system(size: 9))
+                                                    .strikethrough()
+                                                    .foregroundStyle(.tertiary)
+                                            }
+                                            if model != attempted.last {
+                                                Text("→")
+                                                    .font(.system(size: 8))
+                                                    .foregroundStyle(.quaternary)
+                                            }
+                                        }
+                                    }
+                                } else if let model = message.usedModel {
+                                    // Single model used
+                                    Text(ModelRegistry.shortName(for: model))
                                         .font(.system(size: 9))
                                         .foregroundStyle(.tertiary)
                                 }
@@ -3867,24 +4518,48 @@ struct MarkdownView: View {
 struct CodeBlockView: View {
     let language: String?
     let code: String
-    @State private var isHovering = false
-    
+    @State private var copied = false
+
     var body: some View {
         VStack(spacing: 0) {
-            // Header
+            // Header with language and copy button
             HStack {
-                Text(language?.isEmpty == false ? language!.uppercased() : "CODE")
-                    .font(.system(size: 10, weight: .bold))
+                // Language badge
+                if let lang = language, !lang.isEmpty {
+                    HStack(spacing: 4) {
+                        languageIcon(for: lang)
+                        Text(lang.uppercased())
+                            .font(.system(size: 10, weight: .semibold))
+                    }
                     .foregroundStyle(.secondary)
-                Spacer()
-                Button(action: {
-                    let pasteboard = NSPasteboard.general
-                    pasteboard.clearContents()
-                    pasteboard.setString(code, forType: .string)
-                }) {
-                    Image(systemName: "doc.on.doc")
-                        .font(.system(size: 12))
+                } else {
+                    Text("CODE")
+                        .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                // Copy button with feedback
+                Button(action: {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(code, forType: .string)
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        copied = true
+                    }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                        withAnimation { copied = false }
+                    }
+                }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                            .font(.system(size: 11))
+                        if copied {
+                            Text("Copied!")
+                                .font(.system(size: 10))
+                        }
+                    }
+                    .foregroundStyle(copied ? .green : .secondary)
                 }
                 .buttonStyle(.plain)
                 .onHover { hovering in
@@ -3894,22 +4569,131 @@ struct CodeBlockView: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
-            .background(Color.black.opacity(0.3))
-            
-            // Code
-            ScrollView(.horizontal, showsIndicators: true) {
-                Text(code)
+            .background(Color.black.opacity(0.4))
+
+            // Syntax-highlighted code
+            ScrollView([.horizontal, .vertical], showsIndicators: true) {
+                SyntaxHighlightedText(code: code, language: language ?? "")
                     .font(.system(size: 12, design: .monospaced))
                     .padding(12)
                     .textSelection(.enabled)
             }
+            .frame(maxHeight: 400) // Limit height for long code blocks
         }
-        .background(Color.black.opacity(0.1)) // Darker bg
+        .background(Color(red: 0.1, green: 0.1, blue: 0.12)) // Dark code background
         .cornerRadius(8)
         .overlay(
             RoundedRectangle(cornerRadius: 8)
-                .stroke(Color.white.opacity(0.1), lineWidth: 1)
+                .stroke(Color.white.opacity(0.15), lineWidth: 1)
         )
+    }
+
+    @ViewBuilder
+    func languageIcon(for lang: String) -> some View {
+        let lowered = lang.lowercased()
+        switch lowered {
+        case "swift":
+            Image(systemName: "swift")
+        case "python", "py":
+            Image(systemName: "curlybraces")
+        case "javascript", "js", "typescript", "ts":
+            Image(systemName: "j.square")
+        case "rust":
+            Image(systemName: "gearshape.2")
+        case "go", "golang":
+            Image(systemName: "g.square")
+        case "bash", "sh", "zsh", "shell":
+            Image(systemName: "terminal")
+        case "json":
+            Image(systemName: "curlybraces.square")
+        case "html", "xml":
+            Image(systemName: "chevron.left.forwardslash.chevron.right")
+        case "css", "scss", "sass":
+            Image(systemName: "paintpalette")
+        default:
+            Image(systemName: "doc.text")
+        }
+    }
+}
+
+/// Basic syntax highlighting for common patterns
+struct SyntaxHighlightedText: View {
+    let code: String
+    let language: String
+
+    var body: some View {
+        Text(highlightedCode)
+    }
+
+    var highlightedCode: AttributedString {
+        var result = AttributedString(code)
+
+        let lang = language.lowercased()
+
+        // Define color scheme
+        let keywordColor = Color(red: 0.7, green: 0.4, blue: 0.9)      // Purple for keywords
+        let stringColor = Color(red: 0.9, green: 0.5, blue: 0.4)       // Orange for strings
+        let commentColor = Color(red: 0.5, green: 0.5, blue: 0.5)      // Gray for comments
+        let numberColor = Color(red: 0.6, green: 0.8, blue: 0.9)       // Cyan for numbers
+        let functionColor = Color(red: 0.4, green: 0.8, blue: 0.6)     // Green for functions
+        let typeColor = Color(red: 0.4, green: 0.7, blue: 0.9)         // Blue for types
+
+        // Language-specific keywords
+        let keywords: [String]
+        switch lang {
+        case "swift":
+            keywords = ["func", "let", "var", "if", "else", "for", "while", "return", "import", "struct", "class", "enum", "case", "switch", "guard", "private", "public", "internal", "static", "self", "Self", "nil", "true", "false", "async", "await", "try", "catch", "throws", "throw", "@State", "@Binding", "@Published", "@ObservedObject", "@StateObject", "@Environment", "some", "any", "where", "extension", "protocol", "init", "deinit", "override", "final", "lazy", "weak", "unowned", "mutating", "inout"]
+        case "python", "py":
+            keywords = ["def", "class", "if", "elif", "else", "for", "while", "return", "import", "from", "as", "try", "except", "finally", "with", "lambda", "yield", "async", "await", "pass", "break", "continue", "None", "True", "False", "and", "or", "not", "in", "is", "self", "global", "nonlocal", "raise", "assert"]
+        case "javascript", "js", "typescript", "ts":
+            keywords = ["function", "const", "let", "var", "if", "else", "for", "while", "return", "import", "export", "from", "class", "extends", "new", "this", "async", "await", "try", "catch", "throw", "null", "undefined", "true", "false", "typeof", "instanceof", "default", "switch", "case", "break", "continue", "interface", "type", "enum", "public", "private", "protected", "static", "readonly", "abstract", "implements"]
+        case "rust":
+            keywords = ["fn", "let", "mut", "if", "else", "for", "while", "loop", "return", "use", "mod", "pub", "struct", "enum", "impl", "trait", "match", "self", "Self", "Some", "None", "Ok", "Err", "true", "false", "async", "await", "unsafe", "where", "const", "static", "type", "move", "ref", "dyn", "box", "extern", "crate", "super"]
+        case "go", "golang":
+            keywords = ["func", "var", "const", "if", "else", "for", "range", "return", "import", "package", "struct", "interface", "map", "chan", "go", "defer", "select", "case", "switch", "break", "continue", "nil", "true", "false", "type", "make", "new", "append", "len", "cap", "error"]
+        case "bash", "sh", "zsh", "shell":
+            keywords = ["if", "then", "else", "elif", "fi", "for", "while", "do", "done", "case", "esac", "function", "return", "exit", "export", "local", "echo", "read", "cd", "pwd", "ls", "mkdir", "rm", "cp", "mv", "cat", "grep", "awk", "sed", "chmod", "chown", "sudo", "source", "true", "false"]
+        default:
+            keywords = ["function", "const", "let", "var", "if", "else", "for", "while", "return", "import", "class", "struct", "enum", "true", "false", "null", "nil", "self", "this"]
+        }
+
+        // Apply keyword highlighting
+        for keyword in keywords {
+            let pattern = "\\b\(keyword)\\b"
+            if let regex = try? NSRegularExpression(pattern: pattern, options: []) {
+                let nsRange = NSRange(code.startIndex..., in: code)
+                for match in regex.matches(in: code, options: [], range: nsRange) {
+                    if let range = Range(match.range, in: code),
+                       let attrRange = Range(range, in: result) {
+                        result[attrRange].foregroundColor = keywordColor
+                    }
+                }
+            }
+        }
+
+        // Highlight strings (double and single quotes)
+        highlightPattern("\"[^\"\\\\]*(\\\\.[^\"\\\\]*)*\"", in: &result, with: stringColor)
+        highlightPattern("'[^'\\\\]*(\\\\.[^'\\\\]*)*'", in: &result, with: stringColor)
+
+        // Highlight comments (// and #)
+        highlightPattern("//.*$", in: &result, with: commentColor, options: .anchorsMatchLines)
+        highlightPattern("#.*$", in: &result, with: commentColor, options: .anchorsMatchLines)
+
+        // Highlight numbers
+        highlightPattern("\\b\\d+(\\.\\d+)?\\b", in: &result, with: numberColor)
+
+        return result
+    }
+
+    func highlightPattern(_ pattern: String, in result: inout AttributedString, with color: Color, options: NSRegularExpression.Options = []) {
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: options) else { return }
+        let nsRange = NSRange(code.startIndex..., in: code)
+        for match in regex.matches(in: code, options: [], range: nsRange) {
+            if let range = Range(match.range, in: code),
+               let attrRange = Range(range, in: result) {
+                result[attrRange].foregroundColor = color
+            }
+        }
     }
 }
 
