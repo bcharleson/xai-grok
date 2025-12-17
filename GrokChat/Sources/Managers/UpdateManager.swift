@@ -28,10 +28,10 @@ class UpdateManager: NSObject {
         super.init()
 
         // Initialize Sparkle with standard UI
-        // startingUpdater: false prevents automatic check on launch
-        // Users can still manually check via menu: Help → Check for Updates
+        // startingUpdater: true enables the updater so it can check for updates
+        // This is REQUIRED for both manual and automatic update checks to work
         updaterController = SPUStandardUpdaterController(
-            startingUpdater: false,
+            startingUpdater: true,
             updaterDelegate: self,
             userDriverDelegate: nil
         )
