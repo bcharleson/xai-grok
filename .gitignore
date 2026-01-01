@@ -45,3 +45,6 @@ DerivedData/
 *.pyc
 __pycache__/
 create_dmg.py
+
+## Proprietary/Distribution files (keep in private repo only)
+appcast.xml

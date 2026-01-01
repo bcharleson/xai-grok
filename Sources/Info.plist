@@ -47,9 +47,9 @@
 	<key>SUEnableAutomaticChecks</key>
 	<true/>
 	<key>SUFeedURL</key>
-	<string>https://www.topoffunnel.com/downloads/appcast.xml</string>
+	<string>https://your-domain.com/appcast.xml</string>
 	<key>SUPublicEDKey</key>
-	<string>a+vXV7cwhCxuoSLMpuoX8e1G8O223alkm0FX+QxYHlk=</string>
+	<string>YOUR_SPARKLE_PUBLIC_KEY</string>
 	<key>SUScheduledCheckInterval</key>
 	<integer>3600</integer>
 </dict>
