@@ -1,0 +1,12 @@
+Version 1.0.79 Release Notes
+
+Bug Fixes:
+• Fixed phantom update notifications appearing when already on latest version
+• Improved update cache management to prevent stale update alerts
+• Enhanced update logging for better diagnostics
+
+Technical Details:
+This release fixes an issue where Sparkle's update cache could cause
+"update available" notifications even when users were already on the
+latest version. The fix includes better cache management and validation.
+

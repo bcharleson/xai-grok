@@ -1,0 +1,26 @@
+Version 1.0.83 (Build 50) - Microphone Permission Fix
+
+## What's New
+
+### Fixed
+- **Microphone Permission Handling**: Improved microphone access flow with clear instructions
+  - Added helpful alert when microphone permission is denied
+  - One-click button to open System Settings > Microphone
+  - Automatic permission re-check when app becomes active
+  - Better error messages guiding users to enable access
+
+### Technical Improvements
+- Enhanced VoiceManager permission status checking
+- Added system settings deep-link functionality
+- Improved user guidance for voice feature setup
+
+## How to Enable Microphone Access
+
+If you see a microphone permission error:
+1. Click "Open System Settings" in the alert
+2. Enable the toggle for "Grok" under Microphone
+3. Return to Grok and try the voice feature again
+
+---
+
+For issues or feedback, visit: https://github.com/bcharleson/xai-grok
