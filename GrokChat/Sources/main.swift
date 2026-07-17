@@ -10,6 +10,9 @@
 
 import Cocoa
 
+// Ghostty requires one-time global initialization before any libghostty API call.
+GrokGhosttyBootstrap.bootstrapProcess()
+
 let delegate = AppDelegate()
 NSApplication.shared.delegate = delegate
 _ = NSApplicationMain(CommandLine.argc, CommandLine.unsafeArgv)

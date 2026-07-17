@@ -23,6 +23,41 @@ enum AppMode {
     case console
     case grokipedia
     case xTwitter
+    case chatX  // chat.x.com - X's native chat interface
+}
+
+// Custom WKWebView that prevents system beep when typing special characters
+// The beep occurs when macOS can't find a menu item matching a key combination
+class SilentWebView: WKWebView {
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        // Only intercept key events that would cause a beep
+        // Let the WebView handle text input directly
+
+        // If this is a typing event (character keys with Shift for symbols like @),
+        // don't let the menu system try to match it
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+
+        // Shift+number keys (for symbols like @, #, $, etc.) - let WebView handle directly
+        if flags == .shift {
+            // Return false to let the event pass through to the web content
+            // The WebView will handle the character input
+            return false
+        }
+
+        // For Command shortcuts, let the menu system handle them
+        if flags.contains(.command) {
+            return super.performKeyEquivalent(with: event)
+        }
+
+        // For all other cases, pass to super
+        return super.performKeyEquivalent(with: event)
+    }
+
+    // Override keyDown to ensure key events reach the web content
+    override func keyDown(with event: NSEvent) {
+        // Pass all key events to the web content
+        super.keyDown(with: event)
+    }
 }
 
 // Shared observable state for mode switching
@@ -39,7 +74,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var webView: WKWebView!
     var grokipediaWebView: WKWebView!
     var xWebView: WKWebView!
-    var devViewController: NSHostingController<DeveloperRootView>?
+    var chatXWebView: WKWebView!  // chat.x.com - shares cookies with xWebView
+    var devViewController: NSHostingController<BuildRootView>?
     var currentMode: AppMode = .chat {
         didSet {
             AppModeState.shared.currentMode = currentMode
@@ -56,6 +92,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if UserDefaults.standard.object(forKey: "safetyEnabled") == nil {
             UserDefaults.standard.set(true, forKey: "safetyEnabled")
         }
+
+        GrokGhosttyBootstrap.configureEnvironment()
+        GrokGhosttyApp.shared.initializeIfNeeded()
         
         // Initialize Sparkle Update Manager early
         _ = UpdateManager.shared
@@ -97,20 +136,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let prefs = WKWebpagePreferences()
         prefs.allowsContentJavaScript = true
         config.defaultWebpagePreferences = prefs
+
+        // Route web “Grok Build” promo CTAs into the native harness.
+        config.userContentController.add(self, name: WebToBuildBridge.messageHandlerName)
         
-        webView = WKWebView(frame: .zero, configuration: config)
+        // Use SilentWebView to prevent keyboard beeps when typing special characters
+        webView = SilentWebView(frame: .zero, configuration: config)
         webView.allowsBackForwardNavigationGestures = true
         webView.allowsLinkPreview = true
         webView.uiDelegate = self
         webView.navigationDelegate = self // For downloads
-        
+
         // Create toolbar with compact style for tighter appearance
         let toolbar = NSToolbar(identifier: "MainToolbar")
         toolbar.delegate = self
         toolbar.displayMode = .iconOnly
         window.toolbar = toolbar
         window.toolbarStyle = .unifiedCompact // Tighter/smaller toolbar
-        
+
         // Set up Container View
         mainContainerView = NSView(frame: .zero)
         mainContainerView.autoresizingMask = [.width, .height]
@@ -121,8 +164,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         webView.frame = mainContainerView.bounds
         mainContainerView.addSubview(webView)
 
-        // Pre-load Developer View (Grok Code Agent)
-        let devView = NSHostingController(rootView: DeveloperRootView())
+        // Pre-load Developer View (Grok Build Agent)
+        let devView = NSHostingController(rootView: BuildRootView())
         devView.view.autoresizingMask = [.width, .height]
         devView.view.frame = mainContainerView.bounds
         self.devViewController = devView
@@ -134,8 +177,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let grokipediaPrefs = WKWebpagePreferences()
         grokipediaPrefs.allowsContentJavaScript = true
         grokipediaConfig.defaultWebpagePreferences = grokipediaPrefs
-        
-        grokipediaWebView = WKWebView(frame: .zero, configuration: grokipediaConfig)
+
+        // Use SilentWebView for Grokipedia too
+        grokipediaWebView = SilentWebView(frame: .zero, configuration: grokipediaConfig)
         grokipediaWebView.allowsBackForwardNavigationGestures = true
         grokipediaWebView.allowsLinkPreview = true
         grokipediaWebView.uiDelegate = self
@@ -143,12 +187,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         grokipediaWebView.autoresizingMask = [.width, .height]
         grokipediaWebView.frame = mainContainerView.bounds
         // Don't add as subview initially - just load
-        
+
         // Pre-load Grokipedia
         if let grokipediaURL = URL(string: "https://grokipedia.com") {
             grokipediaWebView.load(URLRequest(url: grokipediaURL))
         }
-        
+
         // Setup X.com WebView (separate config for isolated session)
         let xConfig = WKWebViewConfiguration()
         xConfig.websiteDataStore = .default()
@@ -156,20 +200,43 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let xPrefs = WKWebpagePreferences()
         xPrefs.allowsContentJavaScript = true
         xConfig.defaultWebpagePreferences = xPrefs
-        
-        xWebView = WKWebView(frame: .zero, configuration: xConfig)
+
+        // Use SilentWebView for X.com - prevents beep when typing @mentions
+        xWebView = SilentWebView(frame: .zero, configuration: xConfig)
         xWebView.allowsBackForwardNavigationGestures = true
         xWebView.allowsLinkPreview = true
         xWebView.uiDelegate = self
         xWebView.navigationDelegate = self
         xWebView.autoresizingMask = [.width, .height]
         xWebView.frame = mainContainerView.bounds
-        
+
         // Pre-load X.com
         if let xURL = URL(string: "https://x.com") {
             xWebView.load(URLRequest(url: xURL))
         }
-        
+
+        // Setup Chat.X WebView (shares cookies/session with xWebView via same dataStore)
+        let chatXConfig = WKWebViewConfiguration()
+        chatXConfig.websiteDataStore = xConfig.websiteDataStore  // Share cookies with X.com
+        chatXConfig.mediaTypesRequiringUserActionForPlayback = []
+        let chatXPrefs = WKWebpagePreferences()
+        chatXPrefs.allowsContentJavaScript = true
+        chatXConfig.defaultWebpagePreferences = chatXPrefs
+
+        // Use SilentWebView for chat.x.com - same pattern as X.com
+        chatXWebView = SilentWebView(frame: .zero, configuration: chatXConfig)
+        chatXWebView.allowsBackForwardNavigationGestures = true
+        chatXWebView.allowsLinkPreview = true
+        chatXWebView.uiDelegate = self
+        chatXWebView.navigationDelegate = self
+        chatXWebView.autoresizingMask = [.width, .height]
+        chatXWebView.frame = mainContainerView.bounds
+
+        // Pre-load chat.x.com
+        if let chatXURL = URL(string: "https://chat.x.com") {
+            chatXWebView.load(URLRequest(url: chatXURL))
+        }
+
         // Load Grok Chat
         if let url = URL(string: "https://grok.com") {
             webView.load(URLRequest(url: url))
@@ -205,10 +272,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         
         if let button = statusItem.button {
-            // Use custom MenuBarIcon if available, otherwise SF Symbol
             if let iconImage = NSImage(named: "MenuBarIcon") {
-                iconImage.size = NSSize(width: 18, height: 18)
-                button.image = iconImage
+                let icon = iconImage.copy() as! NSImage
+                icon.isTemplate = true
+                button.image = icon
+                button.imageScaling = .scaleProportionallyDown
             } else {
                 // Fallback: waveform.path looks similar to Grok's wavy logo
                 button.image = NSImage(systemSymbolName: "waveform.path", accessibilityDescription: "Grok")
@@ -269,6 +337,27 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let fileMenu = NSMenu(title: "File")
         fileMenuItem.submenu = fileMenu
         fileMenu.addItem(withTitle: "New Chat", action: #selector(newChat(_:)), keyEquivalent: "n")
+        fileMenu.addItem(withTitle: "Open Project Folder…", action: #selector(openProjectFolder(_:)), keyEquivalent: "o")
+        let jumpItem = NSMenuItem(
+            title: "Jump to Session…",
+            action: #selector(openBuildSessionSwitcher(_:)),
+            keyEquivalent: "k"
+        )
+        fileMenu.addItem(jumpItem)
+        let archiveItem = NSMenuItem(
+            title: "Archive Current Session",
+            action: #selector(archiveBuildSession(_:)),
+            keyEquivalent: "w"
+        )
+        archiveItem.keyEquivalentModifierMask = [.command, .shift]
+        fileMenu.addItem(archiveItem)
+        let sendToBuildItem = NSMenuItem(
+            title: "Send to Build",
+            action: #selector(sendToBuild(_:)),
+            keyEquivalent: "b"
+        )
+        sendToBuildItem.keyEquivalentModifierMask = [.command, .shift]
+        fileMenu.addItem(sendToBuildItem)
         fileMenu.addItem(withTitle: "Quick Query", action: #selector(toggleInputWindow(_:)), keyEquivalent: " ") // Option+Space is handled by HotKeyManager, this is a menu item backup
         fileMenu.addItem(NSMenuItem.separator())
         fileMenu.addItem(withTitle: "Close Window", action: #selector(performClose(_:)), keyEquivalent: "w")
@@ -308,6 +397,35 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         historyMenu.addItem(withTitle: "Forward", action: #selector(goForward(_:)), keyEquivalent: "]")
         historyMenu.addItem(NSMenuItem.separator())
         historyMenu.addItem(withTitle: "Home", action: #selector(goHome(_:)), keyEquivalent: "H")
+        historyMenu.addItem(NSMenuItem.separator())
+        let prevProject = NSMenuItem(
+            title: "Previous Build Project",
+            action: #selector(buildPreviousProject(_:)),
+            keyEquivalent: "["
+        )
+        prevProject.keyEquivalentModifierMask = [.command, .shift]
+        historyMenu.addItem(prevProject)
+        let nextProject = NSMenuItem(
+            title: "Next Build Project",
+            action: #selector(buildNextProject(_:)),
+            keyEquivalent: "]"
+        )
+        nextProject.keyEquivalentModifierMask = [.command, .shift]
+        historyMenu.addItem(nextProject)
+        let prevThread = NSMenuItem(
+            title: "Previous Build Chat",
+            action: #selector(buildPreviousThread(_:)),
+            keyEquivalent: "["
+        )
+        prevThread.keyEquivalentModifierMask = [.command, .option]
+        historyMenu.addItem(prevThread)
+        let nextThread = NSMenuItem(
+            title: "Next Build Chat",
+            action: #selector(buildNextThread(_:)),
+            keyEquivalent: "]"
+        )
+        nextThread.keyEquivalentModifierMask = [.command, .option]
+        historyMenu.addItem(nextThread)
         
         // Window Menu
         let windowMenuItem = NSMenuItem()
@@ -413,8 +531,78 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 xWebView.load(URLRequest(url: url))
             }
 
+        case .chatX:
+            // Send query to chat.x.com - use similar JS injection as grok.com
+            let escapedQuery = query.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+            let js = """
+            (function() {
+                console.log('[ChatX] Starting injection...');
+
+                // Find the input element
+                var input = document.querySelector('textarea') ||
+                            document.querySelector('[contenteditable="true"]') ||
+                            document.querySelector('input[type="text"]');
+
+                if (!input) {
+                    console.log('[ChatX] No input found!');
+                    return;
+                }
+
+                input.focus();
+
+                // Set value based on element type
+                if (input.tagName === 'TEXTAREA' || input.tagName === 'INPUT') {
+                    const valueSetter = Object.getOwnPropertyDescriptor(
+                        input.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype,
+                        'value'
+                    ).set;
+                    valueSetter.call(input, "\(escapedQuery)");
+                    input.dispatchEvent(new Event('input', { bubbles: true }));
+                } else {
+                    input.textContent = "\(escapedQuery)";
+                    input.dispatchEvent(new InputEvent('input', { bubbles: true, data: "\(escapedQuery)" }));
+                }
+
+                // Wait for React to process, then submit
+                setTimeout(() => {
+                    var allButtons = document.querySelectorAll('button');
+                    var submitBtn = null;
+
+                    for (var btn of allButtons) {
+                        var label = btn.getAttribute('aria-label') || '';
+                        var text = btn.textContent || '';
+                        if (label.toLowerCase().includes('send') || text.toLowerCase().includes('send')) {
+                            submitBtn = btn;
+                            break;
+                        }
+                    }
+
+                    if (!submitBtn) {
+                        submitBtn = document.querySelector('button[type="submit"]') ||
+                                    document.querySelector('form button:last-child');
+                    }
+
+                    if (submitBtn && !submitBtn.disabled) {
+                        submitBtn.click();
+                    } else {
+                        // Simulate Enter key
+                        var enterEvent = new KeyboardEvent('keydown', {
+                            bubbles: true, cancelable: true,
+                            key: 'Enter', code: 'Enter', keyCode: 13, which: 13
+                        });
+                        input.dispatchEvent(enterEvent);
+                    }
+                }, 200);
+            })();
+            """
+
+            // Wait for page to load, then inject
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                self.chatXWebView.evaluateJavaScript(js, completionHandler: nil)
+            }
+
         case .developer:
-            // Send to Grok Code via notification
+            // Send to Grok Build via notification
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 NotificationCenter.default.post(name: Notification.Name("SpotlightQuery"), object: query)
             }
@@ -563,11 +751,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
     
-    // Navigation Methods - works for Chat, Grokipedia, and X
+    // Navigation Methods - works for Chat, Grokipedia, X, and Chat.X
     private var activeWebView: WKWebView {
         switch currentMode {
         case .grokipedia: return grokipediaWebView
         case .xTwitter: return xWebView
+        case .chatX: return chatXWebView
         default: return webView
         }
     }
@@ -648,9 +837,53 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
     
     @objc func newChat(_ sender: Any?) {
+        if currentMode == .developer || currentMode == .console {
+            showMainWindow(nil)
+            NotificationCenter.default.post(name: .buildNewSession, object: nil)
+            return
+        }
         if let url = URL(string: "https://grok.com") {
             webView.load(URLRequest(url: url))
         }
+    }
+
+    @objc func openProjectFolder(_ sender: Any?) {
+        showMainWindow(nil)
+        updateMode(to: .developer)
+        NotificationCenter.default.post(name: Notification.Name("OpenProjectFolder"), object: nil)
+    }
+
+    @objc func openBuildSessionSwitcher(_ sender: Any?) {
+        showMainWindow(nil)
+        updateMode(to: .developer)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            NotificationCenter.default.post(name: .buildOpenSessionSwitcher, object: nil)
+        }
+    }
+
+    @objc func archiveBuildSession(_ sender: Any?) {
+        guard currentMode == .developer || currentMode == .console else { return }
+        NotificationCenter.default.post(name: .buildArchiveCurrentSession, object: nil)
+    }
+
+    @objc func buildNextProject(_ sender: Any?) {
+        guard currentMode == .developer || currentMode == .console else { return }
+        NotificationCenter.default.post(name: .buildSelectNextProject, object: nil)
+    }
+
+    @objc func buildPreviousProject(_ sender: Any?) {
+        guard currentMode == .developer || currentMode == .console else { return }
+        NotificationCenter.default.post(name: .buildSelectPreviousProject, object: nil)
+    }
+
+    @objc func buildNextThread(_ sender: Any?) {
+        guard currentMode == .developer || currentMode == .console else { return }
+        NotificationCenter.default.post(name: .buildSelectNextThread, object: nil)
+    }
+
+    @objc func buildPreviousThread(_ sender: Any?) {
+        guard currentMode == .developer || currentMode == .console else { return }
+        NotificationCenter.default.post(name: .buildSelectPreviousThread, object: nil)
     }
     
     @objc func zoomIn(_ sender: Any?) {
@@ -675,8 +908,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let prefs = WKWebpagePreferences()
         prefs.allowsContentJavaScript = true
         config.defaultWebpagePreferences = prefs
-        
-        let wv = WKWebView(frame: .zero, configuration: config)
+
+        // Use SilentWebView to prevent keyboard beeps
+        let wv = SilentWebView(frame: .zero, configuration: config)
         if let url = URL(string: "https://console.x.ai/home") {
             wv.load(URLRequest(url: url))
         }
@@ -698,12 +932,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
     
     func updateMode(to mode: AppMode) {
-        guard mode != currentMode else { return }
+        if mode == currentMode {
+            updateWindowChrome(for: mode)
+            if mode == .developer, let devView = devViewController?.view {
+                if devView.superview == nil {
+                    mainContainerView.subviews.forEach { $0.removeFromSuperview() }
+                    devView.frame = mainContainerView.bounds
+                    mainContainerView.addSubview(devView)
+                }
+                NotificationCenter.default.post(name: .buildDidBecomeActive, object: nil)
+            }
+            return
+        }
         currentMode = mode
-        
+        updateWindowChrome(for: mode)
+
         // Remove current view
         mainContainerView.subviews.forEach { $0.removeFromSuperview() }
-        
+
         switch mode {
         case .chat:
             webView.frame = mainContainerView.bounds
@@ -713,7 +959,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             if let devView = devViewController?.view {
                 devView.frame = mainContainerView.bounds
                 mainContainerView.addSubview(devView)
-                // Focus logic if needed
+                NotificationCenter.default.post(name: .buildDidBecomeActive, object: nil)
             }
         case .console:
             consoleWebView.frame = mainContainerView.bounds
@@ -727,7 +973,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             xWebView.frame = mainContainerView.bounds
             mainContainerView.addSubview(xWebView)
             window.makeFirstResponder(xWebView)
+        case .chatX:
+            chatXWebView.frame = mainContainerView.bounds
+            mainContainerView.addSubview(chatXWebView)
+            window.makeFirstResponder(chatXWebView)
         }
+    }
+
+    private func updateWindowChrome(for mode: AppMode) {
+        let isBuild = mode == .developer
+        window.toolbar?.isVisible = true
+        window.appearance = isBuild ? NSAppearance(named: .darkAqua) : nil
+        window.backgroundColor = isBuild
+            ? NSColor(calibratedWhite: 0.075, alpha: 1)
+            : .windowBackgroundColor
+        window.titlebarAppearsTransparent = isBuild
+        window.titleVisibility = .hidden
     }
 }
 
@@ -780,12 +1041,12 @@ extension AppDelegate: NSToolbarDelegate {
         
         if itemIdentifier == NSToolbarItem.Identifier("transfer") {
             let item = NSToolbarItem(itemIdentifier: itemIdentifier)
-            item.label = "Transfer to Code"
-            item.image = NSImage(systemSymbolName: "arrow.up.right.diamond", accessibilityDescription: "Transfer Selection")?.withSymbolConfiguration(smallConfig)
-            item.action = #selector(transferContext(_:))
+            item.label = "Send to Build"
+            item.image = NSImage(systemSymbolName: "arrow.up.right.diamond", accessibilityDescription: "Send to Build")?.withSymbolConfiguration(smallConfig)
+            item.action = #selector(sendToBuild(_:))
             item.target = self
             item.isBordered = true
-            item.toolTip = "Move selected text from Chat to Code"
+            item.toolTip = "Send selection or page to Build (⌘⇧B). GitHub URLs clone & open."
             return item
         }
         
@@ -797,7 +1058,7 @@ extension AppDelegate: NSToolbarDelegate {
             })
             
             let view = NSHostingView(rootView: switcher)
-            view.frame = NSRect(x: 0, y: 0, width: 230, height: 30) // Minimalistic: 𝕏 | Grok | Code | Grokipedia
+            view.frame = NSRect(x: 0, y: 0, width: 336, height: 30) // X + Chat + Grok + Build + Grokipedia (exact previous logos + words)
             
             item.view = view
             return item
@@ -988,85 +1249,68 @@ extension AppDelegate: NSToolbarDelegate {
     }
     
     @objc func transferContext(_ sender: Any?) {
-        // Works in Chat, Grokipedia, and X modes (WebView-based)
-        guard currentMode == .chat || currentMode == .grokipedia || currentMode == .xTwitter else { return }
-        
-        activeWebView.evaluateJavaScript("window.getSelection().toString()") { [weak self] (result, error) in
-            guard let self = self else { return }
-            
-            if let selection = result as? String, !selection.isEmpty {
-                // Switch to Developer Mode
-                self.updateMode(to: .developer)
-                
-                // Broadcast Notification
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                    NotificationCenter.default.post(name: Notification.Name("TransferWebContext"), object: selection)
+        sendToBuild(sender)
+    }
+
+    /// ⌘⇧B — selection → Build; else page title/URL. GitHub URLs offer clone/open.
+    @objc func sendToBuild(_ sender: Any?) {
+        guard currentMode == .chat
+                || currentMode == .grokipedia
+                || currentMode == .xTwitter
+                || currentMode == .chatX else { return }
+
+        let pageURL = activeWebView.url?.absoluteString
+        let pageTitle = activeWebView.title
+
+        activeWebView.evaluateJavaScript("window.getSelection().toString()") { [weak self] result, _ in
+            guard let self else { return }
+            let selection = (result as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let haystack = [selection, pageURL].compactMap { $0 }.joined(separator: "\n")
+
+            if let githubURL = WebToBuildBridge.githubRepoURL(in: haystack) {
+                self.offerGitHubClone(url: githubURL)
+                return
+            }
+
+            let prompt = WebToBuildBridge.structuredPrompt(
+                selection: selection,
+                pageTitle: pageTitle,
+                pageURL: pageURL
+            )
+            let hasSelection = !(selection ?? "").isEmpty
+            self.updateMode(to: .developer)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                if hasSelection {
+                    NotificationCenter.default.post(name: Notification.Name("TransferWebContext"), object: prompt)
+                } else {
+                    NotificationCenter.default.post(name: Notification.Name("SpotlightQuery"), object: prompt)
                 }
-            } else {
-                let alert = NSAlert()
-                alert.messageText = "No Text Selected"
-                alert.informativeText = "Please select the text or code snippet you want to transfer to Code."
-                alert.runModal()
             }
         }
     }
     
     // MARK: - GitHub Integration
     
-    /// Detect GitHub URLs in selected text and offer to clone in Code
+    /// Detect GitHub URLs in selected text and offer to clone in Build
     @objc func detectAndOfferGitHubClone(_ sender: Any?) {
-        // Works in X, Chat, Grokipedia modes
-        guard currentMode == .chat || currentMode == .grokipedia || currentMode == .xTwitter else { return }
-        
-        activeWebView.evaluateJavaScript("window.getSelection().toString()") { [weak self] (result, error) in
-            guard let self = self else { return }
-            
-            if let selection = result as? String, !selection.isEmpty {
-                // Check for GitHub URLs
-                let githubPattern = #"https?://github\.com/[\w\-]+/[\w\-\.]+"#
-                if let regex = try? NSRegularExpression(pattern: githubPattern, options: []),
-                   let match = regex.firstMatch(in: selection, options: [], range: NSRange(selection.startIndex..., in: selection)),
-                   let range = Range(match.range, in: selection) {
-                    
-                    let githubURL = String(selection[range])
-                    self.offerGitHubClone(url: githubURL)
-                } else {
-                    // No GitHub URL found, just transfer text
-                    self.updateMode(to: .developer)
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                        NotificationCenter.default.post(name: Notification.Name("TransferWebContext"), object: selection)
-                    }
-                }
-            } else {
-                let alert = NSAlert()
-                alert.messageText = "No Text Selected"
-                alert.informativeText = "Select text containing a GitHub URL to clone, or any text to transfer."
-                alert.runModal()
-            }
-        }
+        sendToBuild(sender)
     }
     
     private func offerGitHubClone(url: String) {
         let alert = NSAlert()
         alert.messageText = "GitHub Repository Detected"
-        alert.informativeText = "Found: \(url)\n\nWould you like to clone this repository?"
-        alert.addButton(withTitle: "Clone in Code")
-        alert.addButton(withTitle: "Just Transfer URL")
+        alert.informativeText = "Found: \(url)\n\nClone into \(WebToBuildBridge.defaultCloneDirectory().path) and open in Build?"
+        alert.addButton(withTitle: "Clone & Open")
+        alert.addButton(withTitle: "Just Send URL")
         alert.addButton(withTitle: "Cancel")
         
         let response = alert.runModal()
         
         switch response {
         case .alertFirstButtonReturn:
-            // Clone in Code
-            self.updateMode(to: .developer)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                let cloneCommand = "Clone and analyze this GitHub repository: \(url)"
-                NotificationCenter.default.post(name: Notification.Name("SpotlightQuery"), object: cloneCommand)
-            }
+            cloneGitHubAndOpenInBuild(url: url)
         case .alertSecondButtonReturn:
-            // Just transfer URL
-            self.updateMode(to: .developer)
+            updateMode(to: .developer)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 NotificationCenter.default.post(name: Notification.Name("TransferWebContext"), object: url)
             }
@@ -1074,20 +1318,80 @@ extension AppDelegate: NSToolbarDelegate {
             break
         }
     }
+
+    private func cloneGitHubAndOpenInBuild(url: String) {
+        updateMode(to: .developer)
+        let prompt = "Summarize this repository structure and suggest a good first task.\n\nRepo: \(url)"
+
+        if let existing = WebToBuildBridge.localPathIfCloned(githubURL: url) {
+            NotificationCenter.default.post(
+                name: WebToBuildBridge.openProjectAtPath,
+                object: existing,
+                userInfo: ["prompt": prompt, "submit": true]
+            )
+            return
+        }
+
+        WebToBuildBridge.cloneOrOpenRepository(githubURL: url) { [weak self] result in
+            switch result {
+            case .success(let path):
+                NotificationCenter.default.post(
+                    name: WebToBuildBridge.openProjectAtPath,
+                    object: path,
+                    userInfo: ["prompt": prompt, "submit": true]
+                )
+            case .failure(let error):
+                let alert = NSAlert()
+                alert.messageText = "Couldn’t clone repository"
+                alert.informativeText = error.localizedDescription
+                    + "\n\nYou can still send the URL into Build for the CLI to handle."
+                alert.addButton(withTitle: "Send URL to Build")
+                alert.addButton(withTitle: "Cancel")
+                if alert.runModal() == .alertFirstButtonReturn {
+                    self?.updateMode(to: .developer)
+                    NotificationCenter.default.post(
+                        name: Notification.Name("SpotlightQuery"),
+                        object: "Clone and analyze this GitHub repository: \(url)"
+                    )
+                }
+            }
+        }
+    }
+
+    private func openNativeBuildFromWeb() {
+        updateMode(to: .developer)
+        NotificationCenter.default.post(name: .buildDidBecomeActive, object: nil)
+    }
     
-    /// Open current page content in Code for analysis
+    /// Open current page content in Build for analysis
     @objc func openPageInCode(_ sender: Any?) {
-        guard currentMode == .chat || currentMode == .grokipedia || currentMode == .xTwitter else { return }
+        guard currentMode == .chat
+                || currentMode == .grokipedia
+                || currentMode == .xTwitter
+                || currentMode == .chatX else { return }
         
-        // Get the current URL and title
-        guard let url = activeWebView.url?.absoluteString else { return }
+        let url = activeWebView.url?.absoluteString
         let title = activeWebView.title ?? "Web Page"
-        
+        let prompt = WebToBuildBridge.structuredPrompt(selection: nil, pageTitle: title, pageURL: url)
+
         updateMode(to: .developer)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-            let query = "Analyze this page: \(title)\nURL: \(url)"
-            NotificationCenter.default.post(name: Notification.Name("SpotlightQuery"), object: query)
+            NotificationCenter.default.post(name: Notification.Name("SpotlightQuery"), object: prompt)
         }
+    }
+}
+
+// MARK: - Web → Build message bridge
+extension AppDelegate: WKScriptMessageHandler {
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.name == WebToBuildBridge.messageHandlerName else { return }
+        if let body = message.body as? [String: Any],
+           let action = body["action"] as? String,
+           action == "openNativeBuild" {
+            openNativeBuildFromWeb()
+            return
+        }
+        openNativeBuildFromWeb()
     }
 }
 
@@ -1184,6 +1488,23 @@ extension AppDelegate: WKUIDelegate {
 // MARK: - WKNavigationDelegate for downloads
 extension AppDelegate: WKNavigationDelegate {
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, preferences: WKWebpagePreferences, decisionHandler: @escaping (WKNavigationActionPolicy, WKWebpagePreferences) -> Void) {
+        // 0. Web Grok Build / CLI install → native Build tab (already on Mac)
+        if let url = navigationAction.request.url {
+            let host = url.host?.lowercased() ?? ""
+            let path = url.path.lowercased()
+            let absolute = url.absoluteString.lowercased()
+            let isCLIInstall = host.contains("x.ai")
+                && (path.contains("/cli") || absolute.contains("install.sh") || absolute.contains("cli/install"))
+            let isBuildDeepLink = absolute.contains("grok.com/build")
+                || absolute.contains("grok.com/cli")
+                || (host.contains("grok.com") && path.contains("/build"))
+            if isCLIInstall || isBuildDeepLink {
+                openNativeBuildFromWeb()
+                decisionHandler(.cancel, preferences)
+                return
+            }
+        }
+
         // 1. External Link Logic
         // Open non-app links in the default browser (Safari/Chrome)
         if let url = navigationAction.request.url, let host = url.host?.lowercased() {
@@ -1277,6 +1598,12 @@ extension AppDelegate: WKNavigationDelegate {
         #if DEBUG
         print("Page loaded successfully: \(webView.url?.absoluteString ?? "unknown")")
         #endif
+        injectGrokBuildNativeHookIfNeeded(in: webView)
+    }
+
+    private func injectGrokBuildNativeHookIfNeeded(in webView: WKWebView) {
+        guard let host = webView.url?.host?.lowercased(), host.contains("grok.com") else { return }
+        webView.evaluateJavaScript(WebToBuildBridge.grokBuildCTAScript, completionHandler: nil)
     }
 }
 
@@ -1326,51 +1653,64 @@ extension AppDelegate: WKDownloadDelegate {
 struct ToolbarModeSwitcher: View {
     @ObservedObject var modeState = AppModeState.shared
     var onModeChange: (AppMode) -> Void
-    @AppStorage("hasSeenGrokCode") private var hasSeenGrokCode = false
+    @AppStorage("hasSeenGrokBuild") private var hasSeenGrokBuild = false
     @AppStorage("hasSeenGrokipedia") private var hasSeenGrokipedia = false
     @AppStorage("hasSeenX") private var hasSeenX = false
+    @AppStorage("hasSeenChatX") private var hasSeenChatX = false
     @Environment(\.colorScheme) var colorScheme
-    
-    // Button sizes for minimalistic design
-    private let xButtonWidth: CGFloat = 32  // Just the logo
-    private let grokButtonWidth: CGFloat = 50
-    private let codeButtonWidth: CGFloat = 50
-    private let wikiButtonWidth: CGFloat = 85 // "Grokipedia" is longer
+
+    // Real Grok logo — asset catalog at native resolution (avoid tiny NSImage rasterization)
+    private var grokLogo: some View {
+        GrokMarkView(size: 14, template: true)
+    }
+
+    // Button sizes for icon + label design
+    // Order: 𝕏 | Chat | Grok | Build | Grokipedia
+    private let xButtonWidth: CGFloat = 32  // Just the 𝕏 logo
+    private let chatXButtonWidth: CGFloat = 64
+    private let grokButtonWidth: CGFloat = 64
+    private let buildButtonWidth: CGFloat = 66
+    private let wikiButtonWidth: CGFloat = 92
     private let buttonHeight: CGFloat = 24
     private let cornerRadius: CGFloat = 6
-    
+
     private var totalWidth: CGFloat {
-        xButtonWidth + grokButtonWidth + codeButtonWidth + wikiButtonWidth + 4
+        xButtonWidth + chatXButtonWidth + grokButtonWidth + buildButtonWidth + wikiButtonWidth + 4
     }
-    
+
     private var thumbWidth: CGFloat {
         switch modeState.currentMode {
         case .xTwitter: return xButtonWidth
+        case .chatX: return chatXButtonWidth
         case .chat: return grokButtonWidth
-        case .developer, .console: return codeButtonWidth
+        case .developer, .console: return buildButtonWidth
         case .grokipedia: return wikiButtonWidth
         }
     }
-    
+
     private var thumbOffset: CGFloat {
+        // Calculate offset from center for each button position
+        // Buttons: [X][Chat][Grok][Build][Grokipedia]
         switch modeState.currentMode {
-        case .xTwitter: 
+        case .xTwitter:
             return -(totalWidth - xButtonWidth) / 2 + 2
-        case .chat: 
-            return -(totalWidth - xButtonWidth * 2 - grokButtonWidth) / 2 + 2
-        case .developer, .console: 
-            return (totalWidth - wikiButtonWidth * 2 - codeButtonWidth) / 2 - 2
-        case .grokipedia: 
+        case .chatX:
+            return -(totalWidth - xButtonWidth * 2 - chatXButtonWidth) / 2 + 2
+        case .chat:
+            return -(totalWidth - xButtonWidth * 2 - chatXButtonWidth * 2 - grokButtonWidth) / 2 + 2
+        case .developer, .console:
+            return (totalWidth - wikiButtonWidth * 2 - buildButtonWidth) / 2 - 2
+        case .grokipedia:
             return (totalWidth - wikiButtonWidth) / 2 - 2
         }
     }
-    
+
     var body: some View {
         ZStack {
             // Layer 1: Track (Bottom) - with proper clip
             RoundedRectangle(cornerRadius: cornerRadius + 2, style: .continuous)
                 .fill(colorScheme == .dark ? Color(white: 0.15) : Color(white: 0.88))
-            
+
             // Layer 2: Active Thumb (Middle) - Fully Opaque, No Blending
             RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                 .fill(colorScheme == .dark ? Color(white: 0.28) : Color.white)
@@ -1378,10 +1718,11 @@ struct ToolbarModeSwitcher: View {
                 .frame(width: thumbWidth, height: buttonHeight)
                 .offset(x: thumbOffset)
                 .animation(.snappy(duration: 0.2), value: modeState.currentMode)
-            
-            // Layer 3: Labels (Top) - Minimalistic Typography Only
+
+            // Layer 3: Labels (Top) - Icons + Labels
+            // Order: 𝕏 | Chat | Grok | Build | Grokipedia
             HStack(spacing: 0) {
-                // 𝕏 Button - Logo only
+                // 𝕏 Button - Logo only (x.com feed)
                 Button(action: {
                     onModeChange(.xTwitter)
                     hasSeenX = true
@@ -1393,58 +1734,75 @@ struct ToolbarModeSwitcher: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .onHover { hovering in
-                    if hovering { NSCursor.pointingHand.push() }
-                    else { NSCursor.pop() }
-                }
+                .help("X · Home feed")
 
-                // Grok Button - Bold typography
-                Button(action: { onModeChange(.chat) }) {
-                    Text("Grok")
-                        .font(.system(size: 12, weight: .bold, design: .default))
-                        .foregroundStyle(modeState.currentMode == .chat ? (colorScheme == .dark ? .white : .black) : .secondary)
-                        .frame(width: grokButtonWidth, height: buttonHeight)
-                        .contentShape(Rectangle())
+                // Chat Button - chat.x.com
+                Button(action: {
+                    onModeChange(.chatX)
+                    hasSeenChatX = true
+                }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "bubble.left.and.bubble.right")
+                            .font(.system(size: 11, weight: .semibold))
+                        Text("Chat")
+                            .font(.system(size: 11, weight: .semibold))
+                    }
+                    .foregroundStyle(modeState.currentMode == .chatX ? (colorScheme == .dark ? .white : .black) : .secondary)
+                    .frame(width: chatXButtonWidth, height: buttonHeight)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .onHover { hovering in
-                    if hovering { NSCursor.pointingHand.push() }
-                    else { NSCursor.pop() }
-                }
+                .help("Chat · chat.x.com")
 
-                // Code Button - Bold typography
+                // Grok Button
+                Button(action: { onModeChange(.chat) }) {
+                    HStack(spacing: 5) {
+                        grokLogo
+                        Text("Grok")
+                            .font(.system(size: 11, weight: .semibold))
+                    }
+                    .foregroundStyle(modeState.currentMode == .chat ? (colorScheme == .dark ? .white : .black) : .secondary)
+                    .frame(width: grokButtonWidth, height: buttonHeight)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Grok · grok.com")
+
+                // Build Button
                 Button(action: {
                     onModeChange(.developer)
-                    hasSeenGrokCode = true
+                    hasSeenGrokBuild = true
                 }) {
-                    Text("Code")
-                        .font(.system(size: 12, weight: .bold, design: .default))
-                        .foregroundStyle((modeState.currentMode == .developer || modeState.currentMode == .console) ? (colorScheme == .dark ? .white : .black) : .secondary)
-                        .frame(width: codeButtonWidth, height: buttonHeight)
-                        .contentShape(Rectangle())
+                    HStack(spacing: 4) {
+                        Image(systemName: "chevron.left.forwardslash.chevron.right")
+                            .font(.system(size: 10, weight: .bold))
+                        Text("Build")
+                            .font(.system(size: 11, weight: .semibold))
+                    }
+                    .foregroundStyle((modeState.currentMode == .developer || modeState.currentMode == .console) ? (colorScheme == .dark ? .white : .black) : .secondary)
+                    .frame(width: buildButtonWidth, height: buttonHeight)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .onHover { hovering in
-                    if hovering { NSCursor.pointingHand.push() }
-                    else { NSCursor.pop() }
-                }
+                .help("Grok Build · local coding agent")
 
-                // Grokipedia Button - Bold typography
+                // Grokipedia Button
                 Button(action: {
                     onModeChange(.grokipedia)
                     hasSeenGrokipedia = true
                 }) {
-                    Text("Grokipedia")
-                        .font(.system(size: 12, weight: .bold, design: .default))
-                        .foregroundStyle(modeState.currentMode == .grokipedia ? (colorScheme == .dark ? .white : .black) : .secondary)
-                        .frame(width: wikiButtonWidth, height: buttonHeight)
-                        .contentShape(Rectangle())
+                    HStack(spacing: 4) {
+                        Image(systemName: "book.closed")
+                            .font(.system(size: 11, weight: .semibold))
+                        Text("Grokipedia")
+                            .font(.system(size: 11, weight: .semibold))
+                    }
+                    .foregroundStyle(modeState.currentMode == .grokipedia ? (colorScheme == .dark ? .white : .black) : .secondary)
+                    .frame(width: wikiButtonWidth, height: buttonHeight)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .onHover { hovering in
-                    if hovering { NSCursor.pointingHand.push() }
-                    else { NSCursor.pop() }
-                }
+                .help("Grokipedia · knowledge wiki")
             }
         }
         .frame(width: totalWidth, height: buttonHeight + 4)

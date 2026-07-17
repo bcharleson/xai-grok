@@ -13,32 +13,84 @@
 #   ./build-dmg.sh                    # Build without signing (dev only)
 #   ./build-dmg.sh --sign             # Build with code signing
 #   ./build-dmg.sh --sign --notarize  # Build, sign, and notarize
+#   ./build-dmg.sh --skip-build       # Reuse a prior xcodebuild output
 # =============================================================================
 
 set -e
 
+# Always run from the directory containing this script so relative paths
+# (GrokApp.xcodeproj, ./build) resolve regardless of where the script is
+# invoked from.
+cd "$(dirname "$0")"
+
 APP_NAME="Grok"
 DMG_NAME="Grok"
-BUNDLE_ID="com.xai.grok"
-SOURCE_APP="$HOME/Library/Developer/Xcode/DerivedData/GrokApp-*/Build/Products/Release/Grok.app"
+BUNDLE_ID="com.xai.Grok"
+SCHEME="Grok"
+CONFIGURATION="Release"
+PROJECT="GrokApp.xcodeproj"
+DERIVED_DATA="$(pwd)/build"
+LOCAL_APP="$DERIVED_DATA/Build/Products/$CONFIGURATION/$APP_NAME.app"
+# Fallback: previously-built app sitting in the user's shared DerivedData.
+FALLBACK_APP_GLOB="$HOME/Library/Developer/Xcode/DerivedData/GrokApp-*/Build/Products/$CONFIGURATION/$APP_NAME.app"
 
 # Parse arguments
 SIGN=false
 NOTARIZE=false
+SKIP_BUILD=false
 for arg in "$@"; do
     case $arg in
         --sign) SIGN=true ;;
         --notarize) NOTARIZE=true; SIGN=true ;;
+        --skip-build) SKIP_BUILD=true ;;
     esac
 done
 
-# Find the app
-APP_PATH=$(ls -d $SOURCE_APP 2>/dev/null | head -1)
+# Build the app via xcodebuild into a deterministic derived-data location so
+# we never depend on a prior manual build (and avoid the non-deterministic
+# GrokApp-* hash in the user's shared DerivedData).
+if [ "$SKIP_BUILD" = false ]; then
+    if ! command -v xcodebuild >/dev/null 2>&1; then
+        echo "❌ xcodebuild not found. Install Xcode and command-line tools."
+        exit 1
+    fi
 
-if [ -z "$APP_PATH" ]; then
-    echo "❌ Grok.app not found in Release folder"
-    echo "   Make sure you built with Release configuration"
-    echo "   Product → Scheme → Edit Scheme → Run → Build Configuration → Release"
+    echo "🛠  Building $SCHEME ($CONFIGURATION) via xcodebuild..."
+    xcodebuild \
+        -project "$PROJECT" \
+        -scheme "$SCHEME" \
+        -configuration "$CONFIGURATION" \
+        -derivedDataPath "$DERIVED_DATA" \
+        -destination 'generic/platform=macOS' \
+        CODE_SIGN_IDENTITY="" \
+        CODE_SIGNING_REQUIRED=NO \
+        CODE_SIGNING_ALLOWED=NO \
+        clean build | xcpretty 2>/dev/null || \
+    xcodebuild \
+        -project "$PROJECT" \
+        -scheme "$SCHEME" \
+        -configuration "$CONFIGURATION" \
+        -derivedDataPath "$DERIVED_DATA" \
+        -destination 'generic/platform=macOS' \
+        CODE_SIGN_IDENTITY="" \
+        CODE_SIGNING_REQUIRED=NO \
+        CODE_SIGNING_ALLOWED=NO \
+        clean build
+fi
+
+# Resolve the produced app: prefer our deterministic path, then fall back to
+# whatever Xcode last produced in shared DerivedData.
+if [ -d "$LOCAL_APP" ]; then
+    APP_PATH="$LOCAL_APP"
+else
+    APP_PATH=$(ls -d $FALLBACK_APP_GLOB 2>/dev/null | head -1)
+fi
+
+if [ -z "$APP_PATH" ] || [ ! -d "$APP_PATH" ]; then
+    echo "❌ $APP_NAME.app not found after build"
+    echo "   Looked in: $LOCAL_APP"
+    echo "   Fallback:  $FALLBACK_APP_GLOB"
+    echo "   Try re-running without --skip-build."
     exit 1
 fi
 

@@ -41,7 +41,7 @@ class SettingsWindow: NSWindow {
         generalItem.view = createGeneralView()
         
         let grokItem = NSTabViewItem(identifier: "grok")
-        grokItem.label = "Grok Code"
+        grokItem.label = "Grok Build"
         grokItem.view = createGrokView()
         
         tabView.addTabViewItem(generalItem)

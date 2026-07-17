@@ -88,10 +88,15 @@ class APIRetryHelper {
 // MARK: - Sidebar Tab Enum
 
 /// Represents the different tabs in the sidebar
-enum SidebarTab: String, CaseIterable {
-    case files = "Files"
+enum SidebarTab: String, Identifiable {
+    case files = "Explorer"
     case chats = "Chats"
     case git = "Source Control"
+
+    var id: String { rawValue }
+
+    /// Tabs shown in the sidebar — git lives in footer branch indicator only.
+    static var visibleTabs: [SidebarTab] { [.files, .chats] }
 
     var icon: String {
         switch self {
@@ -107,6 +112,88 @@ enum SidebarTab: String, CaseIterable {
         case .chats: return "bubble.left.and.bubble.right.fill"
         case .git: return "arrow.triangle.branch"
         }
+    }
+}
+
+// MARK: - Grok Build Modes (Chat / Agent / Agent full auto)
+
+enum GrokBuildMode: String, CaseIterable, Identifiable {
+    case chat
+    case agent
+    case agentAuto
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .chat:      return "Chat"
+        case .agent:     return "Agent"
+        case .agentAuto: return "Agent (full auto)"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .chat:      return "bubble.left.and.bubble.right"
+        case .agent:     return "person.crop.circle.badge.checkmark"
+        case .agentAuto: return "play.fill"
+        }
+    }
+
+    var description: String {
+        switch self {
+        case .chat:      return "Conversation and read-only exploration — no file changes"
+        case .agent:     return "Human-in-the-loop — you approve each action"
+        case .agentAuto: return "Full autonomy — agent runs tools without asking"
+        }
+    }
+
+    var accentColor: Color {
+        switch self {
+        case .chat:      return .secondary
+        case .agent:     return .blue
+        case .agentAuto: return .green
+        }
+    }
+}
+
+struct GrokBuildModePicker: View {
+    @Binding var mode: GrokBuildMode
+
+    var body: some View {
+        Menu {
+            ForEach(GrokBuildMode.allCases) { option in
+                Button {
+                    mode = option
+                } label: {
+                    HStack {
+                        Image(systemName: option.icon)
+                        Text(option.displayName)
+                        Spacer()
+                        if mode == option {
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: mode.icon)
+                    .font(.system(size: 10, weight: .medium))
+                Text(mode.displayName)
+                    .font(.system(size: 11, weight: .medium))
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Color.primary.opacity(0.05))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
     }
 }
 
@@ -171,48 +258,113 @@ class ModelRegistry {
     // Dynamic cache: Pricing fetched from API (if available)
     static var modelPricing: [String: (input: Double, output: Double)] = [:]
     
-    /// Returns the display name for a model - uses actual API model ID for clarity
-    static func friendlyName(for id: String) -> String {
-        // Use the actual API model ID as the display name to avoid confusion
-        // This ensures each model is uniquely identifiable
-        return id
+    /// Canonical display order (Super Heavy / Grok Build models first).
+    static let defaultModelPreference: [String] = [
+        "grok-build-0.1",
+        "grok-4.20-multi-agent-0309",
+        "grok-4.20-0309-reasoning",
+        "grok-4.20-0309-non-reasoning",
+        "grok-4.3",
+        "grok-imagine-image-quality",
+        "grok-imagine-image",
+        "grok-imagine-video",
+        "grok-4-1-fast-reasoning",
+        "grok-4-1-fast-non-reasoning",
+        "grok-4-fast-reasoning",
+        "grok-4-fast-non-reasoning",
+        "grok-code-fast-1",
+        "grok-4",
+        "grok-2-vision-1212",
+        "grok-2-1212",
+        "grok-beta"
+    ]
+
+    static func sortedDisplayModels(_ models: [String]) -> [String] {
+        let rank: [String: Int] = Dictionary(
+            uniqueKeysWithValues: defaultModelPreference.enumerated().map { ($1, $0) }
+        )
+        return models.sorted { lhs, rhs in
+            let l = rank[lhs] ?? Int.max
+            let r = rank[rhs] ?? Int.max
+            if l != r { return l < r }
+            return lhs.localizedCaseInsensitiveCompare(rhs) == .orderedAscending
+        }
     }
-    
+
+    static func firstAvailable(from preferences: [String], in available: [String]) -> String? {
+        if available.isEmpty { return preferences.first }
+        let set = Set(available)
+        return preferences.first { set.contains($0) }
+    }
+
+    static func fallbackModels(excluding failed: String, from available: [String]) -> [String] {
+        sortedDisplayModels(available).filter { $0 != failed }
+    }
+
+    /// Returns a human-readable name for the model picker.
+    static func friendlyName(for id: String) -> String {
+        switch id {
+        case "grok-build-0.1": return "Grok Build 0.1"
+        case "grok-4.20-0309-non-reasoning": return "Grok 4.20 Fast"
+        case "grok-4.20-0309-reasoning": return "Grok 4.20 Reasoning"
+        case "grok-4.20-multi-agent-0309": return "Grok 4.20 Multi-Agent"
+        case "grok-4.3": return "Grok 4.3"
+        case "grok-imagine-image": return "Imagine Image"
+        case "grok-imagine-image-quality": return "Imagine Image (HD)"
+        case "grok-imagine-video": return "Imagine Video"
+        case "grok-code-fast-1": return "Grok Build 0.1 (legacy ID)"
+        case "grok-2-vision-1212": return "Grok 2 Vision"
+        case "grok-2-1212": return "Grok 2"
+        case "grok-3-mini": return "Grok 3 Mini"
+        case "grok-beta": return "Grok Beta"
+        default:
+            break
+        }
+
+        let m = id.lowercased()
+        if m.contains("4-1-fast") || m.contains("4.1-fast") { return "Grok 4.1 Fast" }
+        if m.contains("4-fast") { return "Grok 4 Fast" }
+        if m.contains("grok-4") { return "Grok 4" }
+        if m.contains("grok-3") { return "Grok 3" }
+        if m.contains("imagine") { return "Imagine" }
+        return id.replacingOccurrences(of: "grok-", with: "Grok ").replacingOccurrences(of: "-", with: " ")
+    }
+
     /// Short name for compact UI (input area)
     static func shortName(for id: String) -> String {
-        // Exact matches first (highest priority)
-        if id == "grok-code-fast-1" { return "⚡ Code" }
-        if id == "grok-2-vision-1212" { return "👁️ Vision" }
-        if id == "grok-2-image-1212" { return "👁️ Vision" }
-        if id == "grok-2-1212" { return "Grok 2" }
-        if id == "grok-3-mini" { return "3 Mini" }
-        if id == "grok-beta" { return "Beta" }
+        switch id {
+        case "grok-build-0.1": return "0.1 ⚡"
+        case "grok-4.20-0309-non-reasoning": return "4.20 ⚡"
+        case "grok-4.20-0309-reasoning": return "4.20 🧠"
+        case "grok-4.20-multi-agent-0309": return "4.20 🤖"
+        case "grok-4.3": return "4.3 🧠"
+        case "grok-imagine-image": return "Imagine"
+        case "grok-imagine-image-quality": return "Imagine HD"
+        case "grok-imagine-video": return "Video"
+        case "grok-code-fast-1": return "0.1 ⚡"
+        case "grok-2-vision-1212": return "Vision"
+        case "grok-2-1212": return "Grok 2"
+        case "grok-3-mini": return "3 Mini"
+        case "grok-beta": return "Beta"
+        default:
+            break
+        }
 
-        // Grok 4.1 Fast Series (must check BEFORE generic 4-fast)
-        if id.contains("4-1-fast") {
-            if id.contains("non-reasoning") { return "4.1 ⚡" }
-            if id.contains("reasoning") { return "4.1 🧠" }
+        let m = id.lowercased()
+        if m.contains("4-1-fast") || m.contains("4.1-fast") {
+            if m.contains("non-reasoning") { return "4.1 ⚡" }
+            if m.contains("reasoning") { return "4.1 🧠" }
             return "4.1"
         }
-
-        // Grok 4 Fast Series (check after 4-1)
-        if id.contains("4-fast") && !id.contains("4-1") {
-            if id.contains("non-reasoning") { return "4 ⚡" }
-            if id.contains("reasoning") { return "4 🧠" }
+        if m.contains("4-fast") {
+            if m.contains("non-reasoning") { return "4 ⚡" }
+            if m.contains("reasoning") { return "4 🧠" }
             return "4 Fast"
         }
-
-        // Grok 4 (non-fast variants)
-        if id.contains("grok-4") && !id.contains("fast") { return "Grok 4 🧠" }
-
-        // Grok 3 series
-        if id.contains("grok-3") && !id.contains("mini") { return "Grok 3" }
-
-        // Generic fallbacks
-        if id.contains("vision") || id.contains("image") { return "Vision" }
-        if id.contains("mini") { return "Mini" }
-
-        // Final fallback: extract version number
+        if m.contains("grok-4") && !m.contains("fast") { return "Grok 4 🧠" }
+        if m.contains("grok-3") && !m.contains("mini") { return "Grok 3" }
+        if m.contains("imagine") || m.contains("vision") || m.contains("image") { return "Vision" }
+        if m.contains("mini") { return "Mini" }
         let parts = id.replacingOccurrences(of: "grok-", with: "").split(separator: "-")
         return String(parts.first ?? "Grok").capitalized
     }
@@ -227,6 +379,11 @@ class ModelRegistry {
         }
         
         let m = model.lowercased()
+
+        // Grok Build 0.1 (agentic coding — same model as Grok Build CLI)
+        if model == "grok-build-0.1" || m.contains("grok-build") {
+            return (input: 1.00, output: 2.00)
+        }
         
         // Grok 4 Series (Premium)
         if m.contains("grok-4.1-fast") || m.contains("grok-4-1-fast") {
@@ -252,9 +409,9 @@ class ModelRegistry {
             return (input: 2.00, output: 10.00)
         }
         
-        // Grok Code
+        // Legacy coding slug (retired → grok-build-0.1)
         if m.contains("grok-code") {
-            return (input: 0.50, output: 2.00) // Fast/cheap
+            return (input: 1.00, output: 2.00)
         }
         
         // Grok Beta (legacy)
@@ -275,32 +432,37 @@ class ModelRegistry {
     }
     
     static func supportsVision(_ id: String) -> Bool {
-        return id.contains("vision") || id.contains("image")
+        let m = id.lowercased()
+        return m.contains("vision") || m.contains("imagine-image") || m.contains("imagine-video")
+            || (m.contains("image") && !m.contains("non-reasoning"))
     }
 
     static func isFast(_ id: String) -> Bool {
-        return id.contains("fast") || id.contains("mini")
+        let m = id.lowercased()
+        return m.contains("non-reasoning") || m.contains("fast") || m.contains("mini")
+            || id == "grok-build-0.1"
     }
 
     static func isCodeSpecialized(_ id: String) -> Bool {
-        return id.contains("code")
+        let m = id.lowercased()
+        return m.contains("code") || id == "grok-build-0.1"
+    }
+
+    static func isMultiAgent(_ id: String) -> Bool {
+        id.lowercased().contains("multi-agent")
     }
 
     /// Returns true only for actual reasoning models (excludes non-reasoning, fast, mini, vision)
     static func isReasoning(_ id: String) -> Bool {
         let m = id.lowercased()
-        // Explicitly NOT reasoning
         if m.contains("non-reasoning") { return false }
-        if m.contains("fast") { return false }
         if m.contains("mini") { return false }
-        if m.contains("vision") { return false }
-        // Explicitly reasoning models
+        if m.contains("imagine") { return false }
+        if m.contains("multi-agent") { return true }
         if m.contains("reasoning") { return true }
-        // Grok 4 (full) is reasoning
-        if m.contains("grok-4") && !m.contains("fast") { return true }
-        // Grok 3 (full, not mini) is reasoning
+        if id == "grok-4.3" { return true }
+        if m.contains("grok-4") && !m.contains("fast") && !m.contains("4.20") { return true }
         if m.contains("grok-3") && !m.contains("mini") { return true }
-        // Grok 2 (not vision) can do reasoning
         if m.contains("grok-2") && !m.contains("vision") { return true }
         return false
     }
@@ -309,9 +471,34 @@ class ModelRegistry {
     static func modelDescription(for id: String) -> String {
         let m = id.lowercased()
 
-        // Grok Code - Lightning fast for coding
+        if id == "grok-build-0.1" {
+            return "⭐ Grok Build 0.1 • Agentic coding • Powers Grok Build CLI"
+        }
+        if id == "grok-4.20-multi-agent-0309" {
+            return "🤖 Multi-agent orchestration • Complex tasks"
+        }
+        if id == "grok-4.20-0309-reasoning" {
+            return "🧠 Deep reasoning • Latest Grok 4.20"
+        }
+        if id == "grok-4.20-0309-non-reasoning" {
+            return "⚡ Fast responses • Latest Grok 4.20"
+        }
+        if id == "grok-4.3" {
+            return "🧠 High-quality reasoning • Grok 4.3"
+        }
+        if id == "grok-imagine-image-quality" {
+            return "🎨 High-quality image generation"
+        }
+        if id == "grok-imagine-image" {
+            return "🎨 Image generation"
+        }
+        if id == "grok-imagine-video" {
+            return "🎬 Video generation"
+        }
+
+        // Grok Build - Lightning fast for coding (legacy slug)
         if m.contains("code") {
-            return "⚡ Lightning fast for coding • 256k context"
+            return "⚡ Legacy ID — use grok-build-0.1 • 256k context"
         }
 
         // Grok 4.1 Fast Series (Latest - November 2025)
@@ -393,131 +580,157 @@ class ModelRegistry {
     ///   - availableModels: List of models available from the API (for validation)
     /// - Returns: A validated model ID that should work with the API
     static func resolveModel(selected: String, hasImage: Bool, textLength: Int, messageText: String = "", availableModels: [String] = []) -> String {
-
-        // LATEST xAI models (December 2025) - prioritize newest & fastest
-        let knownGoodModels = [
-            // Latest Grok 4.1 Fast models (NEW - November 2025)
-            "grok-4-1-fast-reasoning",      // Latest fast + reasoning (2M context)
-            "grok-4-1-fast-non-reasoning",  // Latest fast without reasoning (2M context)
-            // Grok 4 Fast models
-            "grok-4-fast-reasoning",        // Fast + reasoning (2M context)
-            "grok-4-fast-non-reasoning",    // Fast without reasoning (2M context)
-            // Specialized models
-            "grok-code-fast-1",             // Lightning fast for coding (256k context)
-            "grok-4",                       // Best overall model (256k context)
-            // Vision model
-            "grok-2-vision-1212",           // Vision model for images
-            // Legacy fallbacks
-            "grok-2-1212",                  // Legacy fallback
-            "grok-beta"                     // Legacy fallback
+        let visionModels = [
+            "grok-imagine-image-quality",
+            "grok-imagine-image",
+            "grok-2-vision-1212"
         ]
-
-        // Model preferences by task type - PRIORITIZE LATEST MODELS
-        let visionModels = ["grok-2-vision-1212"]  // Only vision model available
         let codingModels = [
-            "grok-code-fast-1",             // BEST for coding - lightning fast
-            "grok-4-1-fast-reasoning",      // Latest fast with reasoning
-            "grok-4-fast-reasoning",        // Fast with reasoning
-            "grok-4",                       // Best overall
-            "grok-2-1212"                   // Legacy fallback
+            "grok-build-0.1",
+            "grok-4.20-multi-agent-0309",
+            "grok-4.20-0309-reasoning",
+            "grok-code-fast-1",
+            "grok-4.3",
+            "grok-4.20-0309-non-reasoning"
         ]
         let reasoningModels = [
-            "grok-4-1-fast-reasoning",      // Latest fast with reasoning
-            "grok-4-fast-reasoning",        // Fast with reasoning
-            "grok-4",                       // Best overall
-            "grok-4-1-fast-non-reasoning",  // Latest fast
-            "grok-2-1212"                   // Legacy fallback
+            "grok-4.20-multi-agent-0309",
+            "grok-4.20-0309-reasoning",
+            "grok-4.3",
+            "grok-build-0.1",
+            "grok-4-1-fast-reasoning",
+            "grok-4-fast-reasoning",
+            "grok-4"
         ]
-        let defaultModels = [
-            "grok-4-1-fast-non-reasoning",  // Latest fast (best balance)
-            "grok-4-fast-non-reasoning",    // Fast
-            "grok-4-1-fast-reasoning",      // Latest fast with reasoning
-            "grok-4",                       // Best overall
-            "grok-2-1212"                   // Legacy fallback
-        ]
+        let defaultModels = defaultModelPreference
 
-        // Analyze the task
         let analysis = analyzeTask(messageText: messageText, hasImage: hasImage, textLength: textLength)
 
-        #if DEBUG
-        print("🤖 Auto Model Selection:")
-        print("   • User selected: \(selected)")
-        print("   • Has image: \(hasImage)")
-        print("   • Text length: \(textLength)")
-        print("   • Available models: \(availableModels.count)")
-        print("   📊 Task Analysis:")
-        print("      • Coding: \(analysis.isCoding) (score: \(analysis.codingScore))")
-        print("      • Reasoning: \(analysis.isReasoning) (score: \(analysis.reasoningScore))")
-        print("      • Vision: \(analysis.isVision)")
-        print("      • Complexity: \(analysis.complexity)")
-        if !analysis.detectedKeywords.isEmpty {
-            print("      • Keywords: \(analysis.detectedKeywords.prefix(5).joined(separator: ", "))")
-        }
-        #endif
-
-        // Helper to find a valid model from preferences
-        func findValidModel(preferring preferences: [String], reason: String) -> String {
-            let safeModels = availableModels.isEmpty ? knownGoodModels : availableModels.filter { knownGoodModels.contains($0) }
-
-            for model in preferences {
-                if safeModels.contains(model) || availableModels.isEmpty {
-                    #if DEBUG
-                    print("   ✅ Selected '\(model)' for: \(reason)")
-                    #endif
-                    return model
-                }
+        func pick(from preferences: [String], reason: String) -> String {
+            if let match = firstAvailable(from: preferences, in: availableModels) {
+                return match
             }
-
-            let fallback = safeModels.first ?? "grok-2-1212"
-            #if DEBUG
-            print("   ⚠️ Using fallback: \(fallback) (reason: \(reason))")
-            #endif
-            return fallback
+            if let fallback = firstAvailable(from: defaultModels, in: availableModels) {
+                return fallback
+            }
+            return preferences.first ?? defaultModels.first ?? "grok-build-0.1"
         }
 
-        // =====================================================
-        // MANUAL MODEL SELECTION - ALWAYS RESPECT USER CHOICE
-        // =====================================================
         if selected != "auto" {
-            // If user manually selected a model, use it (with one exception: vision)
-
-            // Only override for vision if the selected model can't handle images
             if hasImage && !supportsVision(selected) {
-                #if DEBUG
-                print("   ⚠️ User model '\(selected)' can't handle images, switching to vision model")
-                #endif
-                return findValidModel(preferring: visionModels, reason: "🖼️ image requires vision model")
+                return pick(from: visionModels, reason: "vision override")
             }
-
-            // Use the user's selected model directly - even if not in known-good list
-            // The API will return an error if it's invalid, which triggers fallback
-            #if DEBUG
-            print("   ✅ Using user-selected model: \(selected)")
-            #endif
             return selected
         }
 
-        // =====================================================
-        // AUTO MODE LOGIC - Smart selection based on task
-        // =====================================================
-
-        // PRIORITY 1: Vision tasks (image attached)
         if analysis.isVision {
-            return findValidModel(preferring: visionModels, reason: "🖼️ vision task (image attached)")
+            return pick(from: visionModels, reason: "vision task")
         }
-
-        // PRIORITY 2: Coding tasks - use grok-code-fast-1
         if analysis.isCoding {
-            return findValidModel(preferring: codingModels, reason: "💻 coding task (score: \(analysis.codingScore))")
+            return pick(from: codingModels, reason: "coding task")
         }
-
-        // PRIORITY 3: Complex tasks (reasoning + long messages)
         if analysis.isReasoning || analysis.complexity == .complex || textLength > 1500 {
-            return findValidModel(preferring: reasoningModels, reason: "🧠 reasoning/complex task")
+            return pick(from: reasoningModels, reason: "reasoning task")
+        }
+        return pick(from: defaultModels, reason: "general query")
+    }
+
+    /// Models known to work with Grok Build OAuth on the REST chat API.
+    static let oauthCompatibleModels: [String] = [
+        "grok-build-0.1",
+        "grok-code-fast-1",
+        "grok-4.20-0309-non-reasoning",
+        "grok-4.20-0309-reasoning",
+        "grok-4.20-multi-agent-0309",
+        "grok-4-1-fast-non-reasoning",
+        "grok-4-fast-non-reasoning",
+        "grok-beta"
+    ]
+
+    /// When signed in via Grok Build OAuth, some picker models (e.g. grok-4.3) return HTTP 403 on the REST API.
+    static func resolveAPIModel(
+        selected: String,
+        hasImage: Bool,
+        textLength: Int,
+        messageText: String = "",
+        availableModels: [String] = [],
+        useGrokBuildOAuth: Bool
+    ) -> String {
+        let resolved = resolveModel(
+            selected: selected,
+            hasImage: hasImage,
+            textLength: textLength,
+            messageText: messageText,
+            availableModels: availableModels
+        )
+        guard useGrokBuildOAuth else { return normalizeModelID(resolved) }
+
+        let pool = availableModels.isEmpty ? oauthCompatibleModels : availableModels
+        let normalized = normalizeModelID(resolved)
+        if pool.contains(normalized) { return normalized }
+        return firstAvailable(from: oauthCompatibleModels, in: pool)
+            ?? firstAvailable(from: defaultModelPreference, in: pool)
+            ?? "grok-build-0.1"
+    }
+
+    /// Maps retired or alias model IDs to current API slugs.
+    static func normalizeModelID(_ id: String) -> String {
+        switch id {
+        case "grok-code-fast-1":
+            return "grok-build-0.1"
+        default:
+            return id
+        }
+    }
+
+    /// Model slug for `grok agent stdio -m` (Grok Build CLI harness).
+    static func resolveACPModel(selected: String, availableModels: [String] = []) -> String {
+        let candidate: String
+        if selected == "auto" {
+            candidate = "grok-build-0.1"
+        } else {
+            candidate = normalizeModelID(selected)
         }
 
-        // PRIORITY 4: Default - general tasks
-        return findValidModel(preferring: defaultModels, reason: "💬 general query")
+        if availableModels.isEmpty || availableModels.contains(candidate) {
+            return candidate
+        }
+
+        return firstAvailable(from: ["grok-build-0.1", "grok-code-fast-1"], in: availableModels)
+            ?? "grok-build-0.1"
+    }
+
+    /// Detects a simple "what's in this folder?" style request.
+    static func messageAsksForDirectoryListing(_ text: String) -> Bool {
+        let lower = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let phrases = [
+            "what's in", "what is in", "whats in",
+            "what's there", "what is there", "whats there",
+            "this folder", "this directory", "current folder", "current directory",
+            "list files", "list directory", "show files", "show me the files",
+            "contents of", "what files", "files in", "files here", "in this project",
+            "what do we have", "what's here", "what is here"
+        ]
+        return phrases.contains { lower.contains($0) }
+    }
+
+    /// Extracts a folder name from simple "create folder called X" requests.
+    static func parseCreateFolderRequest(_ text: String) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let patterns = [
+            #"(?i)(?:create|make)\s+(?:a\s+)?(?:new\s+)?(?:folder|directory)(?:\s+(?:in\s+(?:here|this(?:\s+(?:folder|directory|project))?))?)?\s*(?:called|named)\s+["']?([^"'\n!?]+)["']?"#,
+            #"(?i)(?:create|make)\s+(?:a\s+)?(?:new\s+)?(?:folder|directory)\s+["']?([^"'\s!?]+)["']?"#,
+            #"(?i)mkdir\s+["']?([^"'\s!?]+)["']?"#
+        ]
+        for pattern in patterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern),
+                  let match = regex.firstMatch(in: trimmed, range: NSRange(trimmed.startIndex..., in: trimmed)),
+                  match.numberOfRanges > 1,
+                  let range = Range(match.range(at: 1), in: trimmed) else { continue }
+            let name = String(trimmed[range]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !name.isEmpty, !name.contains(".."), !name.contains("/") { return name }
+        }
+        return nil
     }
 
     /// Analyzes the message to determine task type and complexity
@@ -630,6 +843,18 @@ class ModelRegistry {
         // 2. Fallback to hardcoded values (based on model patterns)
         let modelLower = model.lowercased()
         
+        // Grok 4.20 / Super Heavy models
+        if modelLower.contains("4.20") {
+            return 2_000_000
+        }
+        // Grok Build 0.1 / legacy code slug
+        if modelLower.contains("grok-build") || modelLower.contains("grok-code") {
+            return 256_000
+        }
+        if model == "grok-4.3" {
+            return 256_000
+        }
+
         // Grok 4 Series (Latest)
         if modelLower.contains("grok-4.1-fast") || modelLower.contains("grok-4.1fast") {
             return 2_000_000 // 2M tokens - Grok 4.1 Fast
@@ -656,11 +881,6 @@ class ModelRegistry {
             return 128_000 // 128K tokens
         }
         
-        // Grok Code (specialized for coding)
-        if modelLower.contains("grok-code") {
-            return 128_000 // 128K tokens
-        }
-        
         // Grok Beta (legacy)
         if modelLower.contains("grok-beta") {
             return 131_072 // 131K tokens
@@ -668,6 +888,44 @@ class ModelRegistry {
         
         // Fallback for unknown models
         return 128_000 // Default: 128K tokens
+    }
+}
+
+// MARK: - ToolAction (top-level so ChatMessage can reference it)
+enum ToolAction: Codable, Equatable {
+    case terminal(String)
+    case readFile(String)
+    case writeFile(String, String)
+    case createDirectory(String)
+    case fetchWeb(String)
+    case searchWeb(String)
+    case openURL(String)
+    case checkServerStatus(Int)
+
+    var isReadOnly: Bool {
+        switch self {
+        case .readFile, .checkServerStatus:
+            return true
+        case .terminal(let cmd):
+            let normalized = cmd.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let readOnlyPrefixes = ["ls", "pwd", "cat ", "head ", "tail ", "find ", "tree", "git status", "git log", "git diff", "git branch"]
+            return readOnlyPrefixes.contains { normalized == $0 || normalized.hasPrefix($0) }
+        case .writeFile, .createDirectory, .fetchWeb, .searchWeb, .openURL:
+            return false
+        }
+    }
+
+    var description: String {
+        switch self {
+        case .terminal(let cmd): return cmd
+        case .readFile(let path): return "Read \(path)"
+        case .writeFile(let path, _): return "Write \(path)"
+        case .createDirectory(let path): return "Create folder \(path)"
+        case .fetchWeb(let url): return "Fetch \(url)"
+        case .searchWeb(let query): return "Search: \(query)"
+        case .openURL(let url): return "Open \(url)"
+        case .checkServerStatus(let port): return "Check localhost:\(port)"
+        }
     }
 }
 
@@ -683,6 +941,44 @@ struct ChatMessage: Identifiable, Equatable, Codable {
     var toolAction: String? = nil // Tool action executed (e.g., "rm file.md")
     var toolOutput: String? = nil // Tool execution result
     var isHiddenFromUI: Bool = false // Hide from UI but keep for API context
+    var pendingToolAction: ToolAction? = nil // For Agent mode approval (transient, not persisted)
+    var activityLines: [AgentActivityLine] = [] // Live inference steps (runtime only)
+
+    // Exclude pendingToolAction from Codable since it's runtime-only state
+    enum CodingKeys: String, CodingKey {
+        case id, role, content, isThinking, imageData, usedModel, modelsAttempted, toolAction, toolOutput, isHiddenFromUI
+    }
+}
+
+struct AgentActivityLine: Identifiable, Equatable {
+    let id: UUID
+    var icon: String
+    var title: String
+    var detail: String?
+    var isInProgress: Bool
+
+    init(id: UUID = UUID(), icon: String, title: String, detail: String? = nil, isInProgress: Bool = false) {
+        self.id = id
+        self.icon = icon
+        self.title = title
+        self.detail = detail
+        self.isInProgress = isInProgress
+    }
+
+    /// Status-only lines that should disappear once a response is shown.
+    static let transientTitles: Set<String> = [
+        "Thinking...", "Thinking…", "Thinking",
+        "Connecting...", "Processing...", "Analyzing results",
+        "Starting Grok agent...", "Starting agent…", "Creating session...", "Preparing session…",
+        "Waiting for Grok agent...", "Connecting…"
+    ]
+
+    var isTransient: Bool { Self.transientTitles.contains(title) }
+
+    static func visibleLines(from lines: [AgentActivityLine], isLive: Bool) -> [AgentActivityLine] {
+        if isLive { return lines }
+        return lines.filter { !$0.isTransient }
+    }
 }
 
 struct ChatSession: Identifiable, Equatable, Codable {
@@ -706,7 +1002,7 @@ class PersistenceController {
     
     private var historyURL: URL {
         let paths = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
-        let dir = paths[0].appendingPathComponent("GrokCode/History")
+        let dir = paths[0].appendingPathComponent("GrokBuild/History") // Renamed from GrokCode for Grok Build branding
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: nil)
         return dir.appendingPathComponent("sessions.json")
     }
@@ -738,17 +1034,106 @@ class PersistenceController {
     }
 }
 
+// MARK: - Shared Grok icon helper
+
+/// Crisp Grok mark for toolbars, sidebars, and inline UI. Uses the MenuBarIcon asset at native resolution.
+struct GrokMarkView: View {
+    var size: CGFloat = 14
+    var template: Bool = true
+    var opacity: Double = 1.0
+
+    var body: some View {
+        Image("MenuBarIcon")
+            .resizable()
+            .interpolation(.high)
+            .antialiased(true)
+            .renderingMode(template ? .template : .original)
+            .aspectRatio(contentMode: .fit)
+            .frame(width: size, height: size)
+            .opacity(opacity)
+            // Prefer vector-like downscale; avoid low-quality bilinear softening in toolbars.
+            .accessibilityHidden(true)
+    }
+}
+
+private func makeGrokLogoImage(size: CGFloat, template: Bool = false) -> NSImage? {
+    guard let grokIcon = NSImage(named: "MenuBarIcon") else { return nil }
+    let icon = grokIcon.copy() as! NSImage
+    icon.isTemplate = template
+    // Preserve source resolution; AppKit/SwiftUI scales down with better filtering than a tiny raster.
+    return icon
+}
+
+private func makeGrokMenuBarIcon(size: CGFloat = 14) -> NSImage? {
+    makeGrokLogoImage(size: size, template: true)
+}
+
+struct GrokLogoView: View {
+    var size: CGFloat = 48
+    var template: Bool = false
+    var opacity: Double = 1.0
+    
+    var body: some View {
+        Group {
+            if NSImage(named: "MenuBarIcon") != nil {
+                GrokMarkView(size: size, template: template, opacity: opacity)
+            } else {
+                Image(systemName: "sparkles")
+                    .font(.system(size: size * 0.55, weight: .semibold))
+                    .foregroundStyle(.orange)
+                    .opacity(opacity)
+            }
+        }
+    }
+}
+
 // MARK: - Main View
 struct DeveloperRootView: View {
     @Environment(\.colorScheme) var colorScheme
     @State private var apiKey: String = "" // Loaded from Keychain on appear
+    
+    // Grok Build CLI session (Super Heavy) - primary auth path
+    @StateObject private var grokBuildAuth = GrokBuildAuthManager.shared
+    @StateObject private var orchestrator = AgentOrchestrator.shared
+
+    @AppStorage("grok_build_mode") private var grokBuildModeRaw: String = GrokBuildMode.agentAuto.rawValue
+
+    private var grokBuildMode: GrokBuildMode {
+        if grokBuildModeRaw == "plan" { return .chat }
+        return GrokBuildMode(rawValue: grokBuildModeRaw) ?? .agentAuto
+    }
+
+    private var grokBuildModeBinding: Binding<GrokBuildMode> {
+        Binding(
+            get: {
+                if grokBuildModeRaw == "plan" { return .chat }
+                return GrokBuildMode(rawValue: grokBuildModeRaw) ?? .agentAuto
+            },
+            set: { grokBuildModeRaw = $0.rawValue }
+        )
+    }
+
     @AppStorage("selected_model") private var selectedModel: String = "auto" // Default to Auto
     @AppStorage("chatRetentionDays") private var chatRetention: Int = 30 // 0 = Forever
     @AppStorage("safetyEnabled") private var safetyEnabled: Bool = true // Default: ON for safety
     
     // Feature Switch: Working Directory with Bookmark Persistence
     @AppStorage("workingDirectoryBookmark") private var workingDirectoryBookmark: Data?
-    @State private var workingDirectory: URL = FileManager.default.temporaryDirectory // Safe default prevents prompt
+    @State private var workingDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+
+    /// Rejects macOS temp dirs and other paths that aren't real project folders.
+    private static func isUsableProjectDirectory(_ url: URL) -> Bool {
+        let path = url.standardizedFileURL.path
+        let temp = FileManager.default.temporaryDirectory.standardizedFileURL.path
+        if path == temp || path.hasPrefix(temp + "/") { return false }
+        if path.contains("/var/folders/") && path.contains("/T") { return false }
+        if path == "/tmp" || path.hasPrefix("/tmp/") { return false }
+        return true
+    }
+
+    private var hasProjectFolder: Bool {
+        workingDirectoryBookmark != nil && Self.isUsableProjectDirectory(workingDirectory)
+    }
     @State private var sessions: [ChatSession] = []
     @State private var currentSessionId: UUID = UUID()
     
@@ -782,6 +1167,7 @@ struct DeveloperRootView: View {
     @State private var isShowingConsole: Bool = false
     @State private var requestStatus: String = "" // For showing what's happening
     @State private var requestStartTime: Date? = nil
+    @State private var activeAssistantMessageId: UUID?
     
     // Sidebar State
     @State private var isSidebarExpanded: Bool = true
@@ -798,6 +1184,8 @@ struct DeveloperRootView: View {
     @State private var isShowingRenameAlert: Bool = false
     @State private var newChatTitle: String = ""
     
+    @State private var showingAPIKeySheet = false
+
     // Event Monitor (for cleanup)
     @State private var eventMonitor: Any?
 
@@ -813,6 +1201,63 @@ struct DeveloperRootView: View {
     var bgDark: Color { Color(nsColor: .windowBackgroundColor) }
     var sidebarBg: Color { Color(nsColor: .controlBackgroundColor) }
     var textGray: Color { Color.secondary }
+
+    // Extracted model selector label to keep the complex conditional logic out of the Menu label
+    // (prevents "Type '()' cannot conform to 'View'" errors in view builders)
+    @ViewBuilder
+    private var modelSelectorLabel: some View {
+        HStack(spacing: 4) {
+            if selectedModel == "auto" {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.orange)
+                Text("Auto")
+                    .font(.system(size: 11, weight: .medium))
+            } else {
+                Text(ModelRegistry.shortName(for: selectedModel))
+                    .font(.system(size: 11, weight: .medium))
+            }
+            Image(systemName: "chevron.down")
+                .font(.system(size: 8))
+                .foregroundStyle(.tertiary)
+        }
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
+    }
+
+    // Extracted to keep the main body expression small enough for the SwiftUI compiler
+    @ViewBuilder
+    private var mainContentView: some View {
+        if isShowingConsole {
+            ConsoleWebView(onBack: { isShowingConsole = false })
+                .transition(.move(edge: .bottom))
+        } else if grokBuildAuth.isUsingGrokBuildSession {
+            // Using Grok Build Super Heavy session (preferred)
+            if sessions.isEmpty && messages.isEmpty {
+                ChatInterface
+            } else {
+                ChatInterface
+            }
+        } else if let cliSession = grokBuildAuth.detectGrokBuildCLISession() {
+            GrokBuildContinuePrompt(session: cliSession) {
+                _ = grokBuildAuth.importFromGrokBuildCLI()
+                fetchModels()
+            } fallbackAPIKeyPrompt: {
+                showingAPIKeySheet = true
+            }
+        } else if apiKey.isEmpty && !grokBuildAuth.isUsingGrokBuildSession {
+            GrokBuildOnboardingView(
+                authManager: grokBuildAuth,
+                apiKey: $apiKey,
+                onUnlock: fetchModels
+            )
+        } else if sessions.isEmpty && messages.isEmpty {
+            ChatInterface
+        } else {
+            ChatInterface
+        }
+    }
     
     var body: some View {
         HStack(spacing: 0) {
@@ -824,10 +1269,13 @@ struct DeveloperRootView: View {
                     // Header (Logo + Toggle)
                     HStack {
                         if isSidebarExpanded {
-                            Text("Grok Code")
-                                .font(.headline)
-                                .fontWeight(.bold)
-                                .foregroundStyle(Color.primary)
+                            HStack(spacing: 8) {
+                                GrokMarkView(size: 18, template: true)
+                                Text("Grok Build")
+                                    .font(.headline)
+                                    .fontWeight(.bold)
+                                    .foregroundStyle(Color.primary)
+                            }
                             Spacer()
                         }
                         Button(action: { isSidebarExpanded.toggle() }) {
@@ -846,109 +1294,31 @@ struct DeveloperRootView: View {
                     .frame(height: 50)
                     
                     if isSidebarExpanded {
-                        VStack(spacing: 0) {
-                            // MARK: - Tab Bar
-                            HStack(spacing: 0) {
-                                ForEach(SidebarTab.allCases, id: \.self) { tab in
-                                    Button(action: {
-                                        // Update state immediately without animation wrapper
-                                        selectedSidebarTab = tab
-                                        if tab == .git {
-                                            refreshGitChanges()
-                                        }
-                                    }) {
-                                        VStack(spacing: 4) {
-                                            Image(systemName: selectedSidebarTab == tab ? tab.selectedIcon : tab.icon)
-                                                .font(.system(size: 16))
-                                                .foregroundStyle(selectedSidebarTab == tab ? .primary : .secondary)
-
-                                            // Badge for git changes
-                                            if tab == .git && hasUncommittedChanges {
-                                                Circle()
-                                                    .fill(Color.orange)
-                                                    .frame(width: 6, height: 6)
-                                                    .offset(x: 8, y: -20)
-                                            }
-                                        }
-                                        .frame(maxWidth: .infinity)
-                                        .padding(.vertical, 10)
-                                        .contentShape(Rectangle()) // Ensure entire area is tappable
-                                    }
-                                    .buttonStyle(.plain)
-                                    .background(selectedSidebarTab == tab ? Color.accentColor.opacity(0.15) : Color.clear)
-                                    .onHover { hovering in
-                                        if hovering { NSCursor.pointingHand.push() }
-                                        else { NSCursor.pop() }
-                                    }
-                                }
-                            }
-                            .padding(.horizontal, 8)
-                            .padding(.bottom, 4)
-
-                            Divider()
-                                .padding(.horizontal, 8)
-
-                            // MARK: - Tab Content
-                            Group {
-                                switch selectedSidebarTab {
-                                case .files:
-                                    sidebarFilesTab
-                                case .chats:
-                                    sidebarChatsTab
-                                case .git:
-                                    sidebarGitTab
-                                }
-                            }
+                        sidebarProjectsTab
                             .frame(maxHeight: .infinity)
-
-                            Spacer(minLength: 0)
-                        }
                     } else {
-                        // COLLAPSED TAB ICONS
                         VStack(spacing: 4) {
-                            ForEach(SidebarTab.allCases, id: \.self) { tab in
-                                Button(action: {
-                                    // Update state immediately, let SwiftUI handle animation
-                                    isSidebarExpanded = true
-                                    selectedSidebarTab = tab
-                                }) {
-                                    ZStack {
-                                        Image(systemName: tab.icon)
-                                            .font(.system(size: 16))
-                                            .foregroundStyle(selectedSidebarTab == tab ? .primary : .secondary)
-
-                                        // Badge for git changes
-                                        if tab == .git && hasUncommittedChanges {
-                                            Circle()
-                                                .fill(Color.orange)
-                                                .frame(width: 6, height: 6)
-                                                .offset(x: 8, y: -8)
-                                        }
-                                    }
+                            Button(action: startNewAgent) {
+                                Image(systemName: "plus.circle.fill")
+                                    .font(.system(size: 18))
+                                    .foregroundStyle(Color.accentColor)
                                     .frame(width: 36, height: 36)
-                                    .contentShape(Rectangle()) // Ensure entire area is tappable
-                                }
-                                .buttonStyle(.plain)
-                                .background(selectedSidebarTab == tab ? Color.accentColor.opacity(0.15) : Color.clear)
-                                .cornerRadius(6)
-                                .help(tab.rawValue)
-                                .onHover { hovering in
-                                    if hovering { NSCursor.pointingHand.push() }
-                                    else { NSCursor.pop() }
-                                }
+                            }
+                            .buttonStyle(.plain)
+                            .help("New Agent")
+                            .onHover { hovering in
+                                if hovering { NSCursor.pointingHand.push() }
+                                else { NSCursor.pop() }
                             }
 
-                            Divider()
-                                .padding(.vertical, 8)
-
-                            Button(action: createNewChat) {
-                                Image(systemName: "square.and.pencil")
-                                    .font(.system(size: 14))
+                            Button(action: { isSidebarExpanded = true }) {
+                                Image(systemName: "folder.fill")
+                                    .font(.system(size: 16))
                                     .foregroundStyle(.secondary)
                                     .frame(width: 36, height: 36)
                             }
                             .buttonStyle(.plain)
-                            .help("New Chat")
+                            .help("Projects")
                             .onHover { hovering in
                                 if hovering { NSCursor.pointingHand.push() }
                                 else { NSCursor.pop() }
@@ -963,8 +1333,8 @@ struct DeveloperRootView: View {
                     VStack(spacing: 6) {
                         Divider()
 
-                        // Git Branch Indicator (if available)
-                        if isSidebarExpanded, let branch = gitBranch {
+                        // Git branch (compact footer when in a repo)
+                        if isSidebarExpanded, let branch = gitBranch, hasProjectFolder {
                             HStack(spacing: 6) {
                                 Image(systemName: "arrow.triangle.branch")
                                     .font(.system(size: 11))
@@ -984,32 +1354,11 @@ struct DeveloperRootView: View {
                             .padding(.horizontal, 12)
                             .padding(.vertical, 4)
                         }
-
-                        // xAI Console
-                        Button(action: { isShowingConsole = true }) {
-                            HStack {
-                                Text("xAI")
-                                    .font(.system(size: 14, weight: .bold))
-                                if isSidebarExpanded {
-                                    Text("Console")
-                                        .font(.system(size: 14))
-                                    Spacer()
-                                }
-                            }
-                            .foregroundStyle(.secondary)
-                        }
-                        .buttonStyle(.plain)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .onHover { hovering in
-                            if hovering { NSCursor.pointingHand.push() }
-                            else { NSCursor.pop() }
-                        }
                     }
                     .padding(.bottom, 12)
                 }
             }
-            .frame(width: isSidebarExpanded ? 240 : 60)
+            .frame(width: isSidebarExpanded ? 260 : 60)
             .animation(.spring(response: 0.3), value: isSidebarExpanded)
             .onReceive(NotificationCenter.default.publisher(for: Notification.Name("ReloadGrokHistory"))) { _ in
                 let loaded = PersistenceController.shared.load()
@@ -1025,21 +1374,7 @@ struct DeveloperRootView: View {
             // MARK: - Main Content
             ZStack {
                 bgDark.ignoresSafeArea()
-                
-                if isShowingConsole {
-                    ConsoleWebView(onBack: { isShowingConsole = false })
-                        .transition(.move(edge: .bottom))
-                } else if apiKey.isEmpty {
-                    LockedView(apiKey: $apiKey, onUnlock: fetchModels)
-                } else if sessions.isEmpty && messages.isEmpty {
-                    // Logic handled in ChatInterface for visual consistency, 
-                    // or we can use HeroView logic if simpler. 
-                    // But we moved welcome logic to ChatInterface.
-                    // Let's just go to ChatInterface.
-                    ChatInterface
-                } else {
-                    ChatInterface
-                }
+                mainContentView
             }
         }
 
@@ -1049,18 +1384,25 @@ struct DeveloperRootView: View {
 
             // Load API key from Keychain
             apiKey = KeychainHelper.shared.getAPIKey() ?? ""
+            
+            // Grok Build: prefer CLI OAuth session (same ~/.grok/auth.json as CLI / VS Code)
+            grokBuildAuth.bootstrapFromCLIIfNeeded()
+
+            // Restore folder access before bootstrap so project/thread state matches disk
+            restoreDirectoryAccess()
+            orchestrator.bootstrap(projectPath: workingDirectory)
 
             if sessions.isEmpty {
-                // Load from disk
                 let loaded = PersistenceController.shared.load()
-                // Apply Retention
                 sessions = PersistenceController.shared.cleanOldSessions(days: chatRetention, sessions: loaded)
             }
-            if sessions.isEmpty {
-                createNewChat()
+
+            if !orchestrator.store.snapshot.workspaces.isEmpty {
+                sessions = orchestrator.store.allThreadsFlat().map { $0.asChatSession }
             }
-            // Restore file access permissions
-            restoreDirectoryAccess()
+
+            beginEmptyAgentSession()
+            prewarmAgentIfNeeded()
             refreshFileList()
             refreshGitStatus()
 
@@ -1081,6 +1423,9 @@ struct DeveloperRootView: View {
             } else {
                 KeychainHelper.shared.saveAPIKey(newValue)
             }
+        }
+        .onChange(of: grokBuildModeRaw) { _ in
+            prewarmAgentIfNeeded()
         }
         .frame(minWidth: 900, minHeight: 600)
         // Alerts
@@ -1109,25 +1454,44 @@ struct DeveloperRootView: View {
                 apiKey = newKey
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("OpenProjectFolder"))) { _ in
+            selectDirectory()
+        }
+        .sheet(isPresented: $showingAPIKeySheet) {
+            GrokBuildAPIKeySheet(apiKey: $apiKey, onSave: {
+                showingAPIKeySheet = false
+                fetchModels()
+            })
+        }
+    }
+    
+    /// Resolves Grok Build OAuth token (with refresh) or falls back to API key.
+    private func authTokenForRequest(completion: @escaping (String?) -> Void) {
+        grokBuildAuth.refreshAccessTokenIfNeeded { result in
+            DispatchQueue.main.async {
+                switch result {
+                case .success(let token):
+                    completion(token)
+                case .failure:
+                    completion(self.grokBuildAuth.resolvedAuthToken(fallbackApiKey: self.apiKey))
+                }
+            }
+        }
     }
     
     var ChatInterface: some View {
         VStack(spacing: 0) {
             if messages.isEmpty {
-                VStack(spacing: 24) {
+                VStack(spacing: 20) {
                     Spacer()
-                    Image(systemName: "terminal.fill")
-                        .font(.system(size: 72))
-                        .foregroundStyle(Color.primary.opacity(0.1))
-                    
+                    GrokMarkView(size: 72, template: true, opacity: 0.2)
                     VStack(spacing: 8) {
-                        Text("Grok Code")
-                            .font(.system(size: 32, weight: .semibold))
-                            .foregroundStyle(Color.primary.opacity(0.2))
-                        
-                        Text("Let's build something together.")
-                            .font(.system(size: 18))
-                            .foregroundStyle(Color.primary.opacity(0.3))
+                        Text("Grok Build")
+                            .font(.system(size: 28, weight: .semibold))
+                            .foregroundStyle(.primary.opacity(0.25))
+                        Text("What do you want to build?")
+                            .font(.system(size: 16))
+                            .foregroundStyle(.tertiary)
                     }
                     Spacer()
                 }
@@ -1137,7 +1501,13 @@ struct DeveloperRootView: View {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 20) {
                             ForEach(messages.filter { !$0.isHiddenFromUI }) { message in
-                                MessageBubble(message: message, requestStatus: message.isThinking ? requestStatus : "")
+                                MessageBubble(
+    message: message,
+    requestStatus: statusText(for: message),
+    isActiveInference: isSending && message.id == activeAssistantMessageId,
+    onApprove: message.pendingToolAction != nil ? { approvePendingTool(messageId: message.id) } : nil,
+    onReject: message.pendingToolAction != nil ? { rejectPendingTool(messageId: message.id) } : nil
+)
                                     .id(message.id)
                             }
                             if isLoadingModels || isSending {
@@ -1145,8 +1515,8 @@ struct DeveloperRootView: View {
                             }
                             Color.clear.frame(height: 1).id("BOTTOM")
                         }
-                        .padding(.horizontal, 40)
-                        .padding(.vertical, 20)
+                        .padding(.horizontal, 24)
+                        .padding(.vertical, 16)
                     }
                     .onChange(of: messages) { _ in
                         withAnimation { proxy.scrollTo("BOTTOM", anchor: .bottom) }
@@ -1190,101 +1560,66 @@ struct DeveloperRootView: View {
     }
     
     var InputArea: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            // Insight Chips
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ActionChip(label: "Create Project", icon: "hammer.fill", action: {
-                        inputMessage = "Create a new project for..."
-                        inputHeight = calculateInputHeight(for: inputMessage)
-                    })
-                    ActionChip(label: "Explain Code", icon: "doc.text.magnifyingglass", action: {
-                        inputMessage = "Explain the code in..."
-                        inputHeight = calculateInputHeight(for: inputMessage)
-                    })
-                    ActionChip(label: "Refactor", icon: "arrow.triangle.2.circlepath", action: {
-                        inputMessage = "Refactor this file to..."
-                        inputHeight = calculateInputHeight(for: inputMessage)
-                    })
-                    ActionChip(label: "Search Web", icon: "globe", action: {
-                        inputMessage = "Search the web for..."
-                        inputHeight = calculateInputHeight(for: inputMessage)
-                    })
-                }
-                .padding(.horizontal, 2)
-            }
-            .padding(.bottom, 4)
-            
-            // Image Preview
+        VStack(alignment: .leading, spacing: 8) {
             if let imgData = inputImage, let nsImage = NSImage(data: imgData) {
-                HStack {
+                HStack(spacing: 8) {
                     Image(nsImage: nsImage)
                         .resizable()
                         .aspectRatio(contentMode: .fit)
-                        .frame(height: 60)
-                        .cornerRadius(8)
-                    
+                        .frame(height: 48)
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
                     Button(action: { inputImage = nil }) {
                         Image(systemName: "xmark.circle.fill")
                             .foregroundStyle(.secondary)
                     }
                     .buttonStyle(.plain)
-                    .onHover { hovering in
-                        if hovering { NSCursor.pointingHand.push() }
-                        else { NSCursor.pop() }
-                    }
                 }
-                .padding(.leading, 4)
             }
-            
-            
-            // Input Box
-            HStack(alignment: .center, spacing: 12) {
-                // Attachment Button
-                Menu {
-                    Button(action: pasteImage) {
-                        Label("Paste from Clipboard", systemImage: "doc.on.clipboard")
-                    }
-                    Button(action: takeScreenshot) {
-                        Label("Take Screenshot", systemImage: "camera.viewfinder")
-                    }
-                } label: {
-                    Image(systemName: "paperclip")
-                        .font(.system(size: 18))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 24, height: 24)
-                }
-                .menuStyle(.borderlessButton)
-                
-                
-                // Custom TextEditor with dynamic height
-                ZStack(alignment: .topLeading) {
-                    // Placeholder text
-                    if inputMessage.isEmpty {
-                        Text("What do you want to build?")
-                            .font(.system(size: 16))
-                            .foregroundColor(Color(nsColor: .placeholderTextColor))
-                            .padding(.top, 6)
-                            .allowsHitTesting(false)
-                    }
 
-                    // TextEditor with custom key handling
-                    CustomTextEditor(
-                        text: $inputMessage,
-                        onSubmit: { sendMessage() },
-                        onTextChange: {
-                            ensureCurrentChatExists()
-                            // Update height based on content
-                            inputHeight = calculateInputHeight(for: inputMessage)
+            VStack(spacing: 0) {
+                HStack(alignment: .bottom, spacing: 10) {
+                    Menu {
+                        Button(action: pasteImage) {
+                            Label("Paste from Clipboard", systemImage: "doc.on.clipboard")
                         }
-                    )
-                    .font(.system(size: 16))
-                    .scrollContentBackground(.hidden)
-                    .background(Color.clear)
-                    .frame(height: inputHeight)
-                }
-                
-                // Model Selector
+                        Button(action: takeScreenshot) {
+                            Label("Take Screenshot", systemImage: "camera.viewfinder")
+                        }
+                    } label: {
+                        Image(systemName: "paperclip")
+                            .font(.system(size: 14))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 28, height: 28)
+                    }
+                    .menuStyle(.borderlessButton)
+
+                    ZStack(alignment: .topLeading) {
+                        if inputMessage.isEmpty {
+                            Text("Message Grok Build…")
+                                .font(.system(size: 14))
+                                .foregroundStyle(.tertiary)
+                                .padding(.top, 7)
+                                .padding(.leading, 2)
+                                .lineLimit(1)
+                                .allowsHitTesting(false)
+                        }
+
+                        CustomTextEditor(
+                            text: $inputMessage,
+                            onSubmit: { sendMessage() },
+                            onTextChange: {
+                                ensureCurrentChatExists()
+                                inputHeight = calculateInputHeight(for: inputMessage)
+                            }
+                        )
+                        .font(.system(size: 14))
+                        .scrollContentBackground(.hidden)
+                        .background(Color.clear)
+                        .frame(height: inputHeight)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
+                    .layoutPriority(1)
+
                 Menu {
                     // Auto Option
                     Button(action: { selectedModel = "auto" }) {
@@ -1300,7 +1635,7 @@ struct DeveloperRootView: View {
                                         .foregroundStyle(Color.accentColor)
                                 }
                             }
-                            Text("Automatically selects the best model")
+                            Text("Automatically picks Grok Build on Super Heavy")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -1336,6 +1671,11 @@ struct DeveloperRootView: View {
                                                 .foregroundStyle(.yellow)
                                                 .help("Fast: Optimized for speed")
                                         }
+                                        if ModelRegistry.isMultiAgent(model) {
+                                            Image(systemName: "person.3.fill")
+                                                .foregroundStyle(.cyan)
+                                                .help("Multi-agent orchestration")
+                                        }
                                         if ModelRegistry.isCodeSpecialized(model) {
                                             Image(systemName: "chevron.left.forwardslash.chevron.right")
                                                 .foregroundStyle(.green)
@@ -1359,102 +1699,93 @@ struct DeveloperRootView: View {
                         }
                     }
                 } label: {
-                     HStack(spacing: 4) {
-                         if selectedModel == "auto" {
-                             // Show "Auto" with sparkles icon
-                             Image(systemName: "sparkles")
-                                 .font(.system(size: 10))
-                                 .foregroundStyle(.orange)
-                             Text("Auto")
-                                 .fontWeight(.medium)
-                                 .foregroundStyle(.secondary)
-                         } else {
-                             // Show capability icons for selected model
-                             HStack(spacing: 3) {
-                                 if ModelRegistry.supportsVision(selectedModel) {
-                                     Image(systemName: "eye.fill")
-                                         .font(.system(size: 9))
-                                         .foregroundStyle(.blue)
-                                 }
-                                 if ModelRegistry.isReasoning(selectedModel) {
-                                     Image(systemName: "brain.head.profile")
-                                         .font(.system(size: 9))
-                                         .foregroundStyle(.purple)
-                                 }
-                                 if ModelRegistry.isFast(selectedModel) {
-                                     Image(systemName: "bolt.fill")
-                                         .font(.system(size: 9))
-                                         .foregroundStyle(.yellow)
-                                 }
-                                 if ModelRegistry.isCodeSpecialized(selectedModel) {
-                                     Image(systemName: "chevron.left.forwardslash.chevron.right")
-                                         .font(.system(size: 9))
-                                         .foregroundStyle(.green)
-                                 }
-                             }
-                             Text(ModelRegistry.shortName(for: selectedModel))
-                                 .foregroundStyle(.secondary)
-                         }
-
-                         // Warning if capabilities mismatch (Manual mode only)
-                         if inputImage != nil && selectedModel != "auto" && !ModelRegistry.supportsVision(selectedModel) {
-                             Image(systemName: "exclamationmark.triangle.fill")
-                                 .font(.system(size: 10))
-                                 .foregroundStyle(.orange)
-                                 .help("Selected model does not support images. Auto-switch will override.")
-                         }
-                     }
-                     .font(.caption)
-                 }
-                 .menuStyle(.borderlessButton)
-                 .fixedSize()
-                Button(action: {
-                     if isSending {
-                         stopGeneration()
-                     } else {
-                         sendMessage()
-                     }
-                 }) {
-                     Image(systemName: isSending ? "stop.fill" : "arrow.up")
-                         .font(.system(size: 16, weight: .bold))
-                         .frame(width: 30, height: 30)
-                         .background(isSending ? Color.red : Color.primary)
-                         .clipShape(Circle())
-                         .foregroundStyle(Color(nsColor: .windowBackgroundColor))
-                 }
-                 .buttonStyle(.plain)
-                 .disabled((inputMessage.isEmpty && inputImage == nil) && !isSending)
-                 .onHover { hovering in
-                     if hovering && (isSending || (!inputMessage.isEmpty || inputImage != nil)) {
-                         NSCursor.pointingHand.push()
-                     } else if !hovering {
-                         NSCursor.pop()
-                     }
-                 }
-
-                // Context Window Indicator (to the right of send button)
-                if totalTokens > 0, let model = currentModelUsed {
-                    ContextWindowIndicator(
-                        tokens: totalTokens,
-                        usage: contextUsage,
-                        model: model,
-                        inputTokens: lastInputTokens,
-                        outputTokens: lastOutputTokens,
-                        sessionCost: sessionCost,
-                        totalCost: totalCost
-                    )
-                    .padding(.leading, 8)
+                    modelSelectorLabel
                 }
+                .menuStyle(.borderlessButton)
+                .fixedSize(horizontal: true, vertical: false)
+
+                    Button(action: {
+                        if isSending { stopGeneration() } else { sendMessage() }
+                    }) {
+                        Image(systemName: isSending ? "stop.fill" : "arrow.up")
+                            .font(.system(size: 13, weight: .bold))
+                            .frame(width: 28, height: 28)
+                            .background(isSending ? Color.red : Color.primary)
+                            .clipShape(Circle())
+                            .foregroundStyle(Color(nsColor: .windowBackgroundColor))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled((inputMessage.isEmpty && inputImage == nil) && !isSending)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+
+                Divider().opacity(0.5)
+
+                HStack(spacing: 8) {
+                    GrokBuildModePicker(mode: grokBuildModeBinding)
+                    if isSending {
+                        TimelineView(.periodic(from: .now, by: 1.0)) { _ in
+                            HStack(spacing: 6) {
+                                ProgressView().controlSize(.mini)
+                                Text(activityStatusLabel)
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                        }
+                    } else if orchestrator.isSessionReady {
+                        HStack(spacing: 4) {
+                            Circle()
+                                .fill(Color.green)
+                                .frame(width: 6, height: 6)
+                            Text("Grok CLI ready")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                        }
+                    } else if orchestrator.isPrewarming {
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.mini)
+                            Text("Starting Grok CLI…")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                        }
+                    } else if grokBuildMode != .chat, orchestrator.prewarmFailed {
+                        Text("Grok CLI offline · API fallback")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    } else if grokBuildMode != .chat {
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.mini)
+                            Text("Starting Grok CLI…")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    Spacer()
+                    if totalTokens > 0, let model = currentModelUsed {
+                        ContextWindowIndicator(
+                            tokens: totalTokens,
+                            usage: contextUsage,
+                            model: model,
+                            inputTokens: lastInputTokens,
+                            outputTokens: lastOutputTokens,
+                            sessionCost: sessionCost,
+                            totalCost: totalCost
+                        )
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
             }
-            .padding(14)
             .background(Color(nsColor: .controlBackgroundColor))
-            .cornerRadius(30)
+            .clipShape(RoundedRectangle(cornerRadius: 14))
             .overlay(
-                RoundedRectangle(cornerRadius: 30)
-                   .stroke(Color.primary.opacity(0.1), lineWidth: 1)
+                RoundedRectangle(cornerRadius: 14)
+                    .stroke(Color.primary.opacity(0.08), lineWidth: 1)
             )
         }
-        .frame(maxWidth: 700)
+        .frame(maxWidth: 640)
         // Handle Cmd+V for image paste
         .onAppear {
             eventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
@@ -1481,68 +1812,75 @@ struct DeveloperRootView: View {
 
     // MARK: - Sidebar Tab Views
 
-    /// Files tab content
+    /// Files tab — project explorer only
     private var sidebarFilesTab: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Working Directory Header
-            Button(action: selectDirectory) {
-                HStack(spacing: 6) {
-                    Image(systemName: "folder.fill")
-                        .foregroundStyle(.blue)
-                        .font(.system(size: 14))
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(workingDirectoryBookmark == nil ? "Select Folder" : workingDirectory.lastPathComponent)
-                            .font(.system(size: 12, weight: .semibold))
-                            .lineLimit(1)
-                        if workingDirectoryBookmark != nil {
-                            Text(workingDirectory.path)
-                                .font(.system(size: 9))
-                                .foregroundStyle(.tertiary)
-                                .lineLimit(1)
-                                .truncationMode(.head)
-                        }
-                    }
-                    Spacer(minLength: 4)
-                    Button(action: refreshFileList) {
-                        Image(systemName: "arrow.clockwise")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.tertiary)
-                    }
-                    .buttonStyle(.plain)
-                    .onHover { hovering in
-                        if hovering { NSCursor.pointingHand.push() }
-                        else { NSCursor.pop() }
-                    }
+            HStack(spacing: 8) {
+                Text("Explorer")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button(action: refreshFileList) {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
                 }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
-                .background(.quaternary.opacity(0.3))
-                .cornerRadius(6)
+                .buttonStyle(.plain)
+                .help("Refresh")
+                .disabled(!hasProjectFolder)
+                Button(action: selectDirectory) {
+                    Image(systemName: "folder.badge.plus")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Open Folder…")
             }
-            .buttonStyle(.plain)
-            .padding(.horizontal, 8)
-            .padding(.top, 8)
-            .padding(.bottom, 6)
-            .onHover { hovering in
-                if hovering { NSCursor.pointingHand.push() }
-                else { NSCursor.pop() }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+
+            if hasProjectFolder {
+                Text(workingDirectory.path)
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(2)
+                    .truncationMode(.middle)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 6)
             }
 
-            // File Tree
+            Divider()
+                .padding(.horizontal, 8)
+
             ScrollView {
-                if fileTree.isEmpty {
+                if !hasProjectFolder {
+                    VStack(spacing: 12) {
+                        Image(systemName: "folder")
+                            .font(.system(size: 32))
+                            .foregroundStyle(.tertiary)
+                        Text("Open a project folder")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(.secondary)
+                        Text("Grok Build will read and edit files in the folder you choose.")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 8)
+                        Button("Open Folder…", action: selectDirectory)
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 48)
+                    .padding(.horizontal, 12)
+                } else if fileTree.isEmpty {
                     VStack(spacing: 8) {
-                        Image(systemName: "folder.badge.questionmark")
+                        Image(systemName: "doc")
                             .font(.system(size: 28))
                             .foregroundStyle(.tertiary)
-                        Text(workingDirectoryBookmark == nil ? "No folder selected" : "Empty directory")
+                        Text("Empty folder")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        if workingDirectoryBookmark == nil {
-                            Text("Click above to select a folder")
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
-                        }
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.top, 40)
@@ -1553,83 +1891,156 @@ struct DeveloperRootView: View {
                         }
                     }
                     .padding(.horizontal, 4)
+                    .padding(.vertical, 4)
                 }
             }
         }
     }
 
-    /// Chats tab content
-    private var sidebarChatsTab: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // Header with new chat button
-            HStack {
-                Text("Chat History")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button(action: createNewChat) {
-                    Image(systemName: "square.and.pencil")
-                        .font(.system(size: 13))
-                        .foregroundStyle(.secondary)
+    /// Projects sidebar — folder = agent context, threads nested under each project
+    private var sidebarProjectsTab: some View {
+        ProjectsSidebarView(
+            store: orchestrator.store,
+            authManager: grokBuildAuth,
+            hasAPIKey: !apiKey.isEmpty,
+            selectedProjectId: orchestrator.store.snapshot.selectedProjectId,
+            currentThreadId: $currentSessionId,
+            busyThreadIds: [],
+            onNewAgent: startNewAgent,
+            onSelectProject: activateProject,
+            onSelectThread: activateThread,
+            onOpenSettings: openSettings,
+            onNewThread: { project in
+                orchestrator.store.select(projectId: project.id)
+                let thread = orchestrator.store.createThread(inProjectId: project.id, title: "New Chat")
+                activateThread(thread, project: project)
+            },
+            onDeleteThread: { id in
+                if let thread = orchestrator.store.allThreadsFlat().first(where: { $0.id == id }) {
+                    deleteChat(thread.asChatSession)
                 }
-                .buttonStyle(.plain)
-                .help("New Chat")
-                .onHover { hovering in
-                    if hovering { NSCursor.pointingHand.push() }
-                    else { NSCursor.pop() }
+                orchestrator.store.deleteThread(id)
+            },
+            onRenameThread: { id, currentTitle in
+                if let thread = orchestrator.store.allThreadsFlat().first(where: { $0.id == id }) {
+                    sessionToRename = thread.asChatSession
+                    newChatTitle = currentTitle
+                    isShowingRenameAlert = true
                 }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
+            },
+            onArchiveThread: { id in
+                orchestrator.store.archiveThread(id)
+                if currentSessionId == id,
+                   let project = orchestrator.store.selectedProject,
+                   let next = orchestrator.store.activeThreads(for: project).first {
+                    activateThread(next, project: project)
+                }
+            },
+            onUnarchiveThread: { id in
+                orchestrator.store.unarchiveThread(id)
+                if let project = orchestrator.store.selectedProject,
+                   let thread = project.threads.first(where: { $0.id == id }) {
+                    activateThread(thread, project: project)
+                }
+            },
+            onNewWorktree: startNewWorktree,
+            onSwitchBranch: requestSwitchBranch,
+            onRemoveProject: { project in
+                orchestrator.store.removeProject(id: project.id)
+                if let next = orchestrator.store.selectedProject {
+                    activateProject(next)
+                } else {
+                    sessions = []
+                    messages = []
+                }
+            },
+            onTogglePin: { project in
+                orchestrator.store.toggleProjectPinned(project.id)
+            },
+            showInactiveProjects: .constant(true)
+        )
+    }
 
-            // Chat Sessions List
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 2) {
-                    ForEach(sessions) { session in
-                        Button(action: { switchChat(to: session.id) }) {
-                            HStack(spacing: 8) {
-                                Image(systemName: session.id == currentSessionId ? "bubble.left.fill" : "bubble.left")
-                                    .font(.system(size: 12))
-                                    .foregroundStyle(session.id == currentSessionId ? .primary : .secondary)
-                                    .frame(width: 14)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(session.title)
-                                        .font(.system(size: 12))
-                                        .lineLimit(1)
-                                        .truncationMode(.tail)
-                                    Text("\(session.messages.count) messages")
-                                        .font(.system(size: 9))
-                                        .foregroundStyle(.tertiary)
-                                }
-                                Spacer(minLength: 4)
-                            }
-                            .padding(.vertical, 8)
-                            .padding(.horizontal, 10)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(session.id == currentSessionId ? Color.accentColor.opacity(0.2) : Color.clear)
-                            .cornerRadius(6)
-                        }
-                        .buttonStyle(.plain)
-                        .onHover { hovering in
-                            if hovering { NSCursor.pointingHand.push() }
-                            else { NSCursor.pop() }
-                        }
-                        .contextMenu {
-                            Button("Rename") {
-                                sessionToRename = session
-                                newChatTitle = session.title
-                                isShowingRenameAlert = true
-                            }
-                            Button("Delete", role: .destructive) {
-                                sessionToDelete = session
-                                isShowingDeleteConfirmation = true
-                            }
-                        }
-                    }
-                }
-                .padding(.horizontal, 8)
-            }
+    // MARK: - Git worktree / branch actions
+
+    func startNewWorktree(for project: AgentProject) {
+        guard GitService.isRepository(at: project.path) else {
+            presentGitError("\(project.name) is not a git repository.")
+            return
         }
+        guard let branch = promptForBranchName() else { return }
+        switch GitService.createWorktree(repoPath: project.path, branch: branch) {
+        case .success(let worktreePath):
+            let worktree = orchestrator.store.addWorktreeProject(
+                name: branch,
+                path: worktreePath,
+                branch: branch,
+                parentRepoPath: project.path
+            )
+            openProjectFolder(worktree.url, startNewAgent: true)
+        case .failure(let error):
+            presentGitError(error.localizedDescription)
+        }
+    }
+
+    func requestSwitchBranch(for project: AgentProject) {
+        guard GitService.isRepository(at: project.path) else {
+            presentGitError("\(project.name) is not a git repository.")
+            return
+        }
+        let branches = GitService.localBranches(at: project.path)
+        guard !branches.isEmpty else {
+            presentGitError("No local branches found for \(project.name).")
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = "Switch Branch"
+        alert.informativeText = "Choose a branch to check out in \(project.name)."
+        alert.addButton(withTitle: "Switch")
+        alert.addButton(withTitle: "Cancel")
+        let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 240, height: 26))
+        popup.addItems(withTitles: branches)
+        if let current = project.gitBranch, branches.contains(current) {
+            popup.selectItem(withTitle: current)
+        }
+        alert.accessoryView = popup
+        guard alert.runModal() == .alertFirstButtonReturn,
+              let branch = popup.titleOfSelectedItem else { return }
+        switchBranch(for: project, to: branch)
+    }
+
+    func switchBranch(for project: AgentProject, to branch: String) {
+        switch GitService.switchBranch(branch, at: project.path) {
+        case .success:
+            orchestrator.store.setBranch(branch, for: project.id)
+            refreshGitStatus()
+        case .failure(let error):
+            presentGitError(error.localizedDescription)
+        }
+    }
+
+    func promptForBranchName() -> String? {
+        let alert = NSAlert()
+        alert.messageText = "New Worktree"
+        alert.informativeText = "Enter a branch name. A new branch is created if it doesn't already exist."
+        alert.addButton(withTitle: "Create")
+        alert.addButton(withTitle: "Cancel")
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        field.placeholderString = "feature/my-branch"
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? nil : name
+    }
+
+    func presentGitError(_ message: String) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Git"
+        alert.informativeText = message
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     /// Git/Source Control tab content
@@ -1951,14 +2362,15 @@ struct DeveloperRootView: View {
     /// Initialize a new git repository with an initial commit on main branch
     func initializeGitRepository() {
         isInitializingRepo = true
+        let directory = workingDirectory
 
         DispatchQueue.global(qos: .userInitiated).async {
             // Step 1: Initialize the repository
-            let initResult = self.runGitCommand(["init"])
+            let initResult = self.runGitCommand(["init"], in: directory)
 
             #if DEBUG
             print("Git init result: \(initResult ?? "nil")")
-            print("Working directory: \(self.workingDirectory.path)")
+            print("Working directory: \(directory.path)")
             #endif
 
             guard initResult != nil else {
@@ -1969,13 +2381,13 @@ struct DeveloperRootView: View {
             }
 
             // Step 2: Configure default branch name to 'main'
-            _ = self.runGitCommand(["config", "init.defaultBranch", "main"])
+            _ = self.runGitCommand(["config", "init.defaultBranch", "main"], in: directory)
 
             // Step 3: Ensure we're on main branch
-            _ = self.runGitCommand(["checkout", "-b", "main"])
+            _ = self.runGitCommand(["checkout", "-b", "main"], in: directory)
 
             // Step 4: Create a .gitignore file if it doesn't exist
-            let gitignorePath = self.workingDirectory.appendingPathComponent(".gitignore")
+            let gitignorePath = directory.appendingPathComponent(".gitignore")
             if !FileManager.default.fileExists(atPath: gitignorePath.path) {
                 let defaultGitignore = """
                 # macOS
@@ -1996,10 +2408,10 @@ struct DeveloperRootView: View {
             }
 
             // Step 5: Add all files
-            _ = self.runGitCommand(["add", "."])
+            _ = self.runGitCommand(["add", "."], in: directory)
 
             // Step 6: Create initial commit
-            let commitResult = self.runGitCommand(["commit", "-m", "Initial commit"])
+            let commitResult = self.runGitCommand(["commit", "-m", "Initial commit"], in: directory)
 
             #if DEBUG
             print("Git commit result: \(commitResult ?? "nil")")
@@ -2007,14 +2419,14 @@ struct DeveloperRootView: View {
 
             // Step 7: Refresh UI to show the new repository state
             // Get the branch name directly before switching to main thread
-            let branch = self.runGitCommand(["rev-parse", "--abbrev-ref", "HEAD"])
-            let status = self.runGitCommand(["status", "--porcelain"])
+            let branch = self.runGitCommand(["rev-parse", "--abbrev-ref", "HEAD"], in: directory)
+            let status = self.runGitCommand(["status", "--porcelain"], in: directory)
 
             DispatchQueue.main.async {
                 // Update git state directly
                 self.gitBranch = branch?.trimmingCharacters(in: .whitespacesAndNewlines)
                 self.hasUncommittedChanges = !(status?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
-                self.gitRepositoryPath = self.workingDirectory.path
+                self.gitRepositoryPath = directory.path
 
                 // Refresh changed files
                 self.refreshGitChanges()
@@ -2032,8 +2444,9 @@ struct DeveloperRootView: View {
 
     /// Unstage a file
     func unstageFile(_ path: String) {
+        let directory = workingDirectory
         DispatchQueue.global(qos: .userInitiated).async {
-            _ = self.runGitCommand(["reset", "HEAD", "--", path])
+            _ = self.runGitCommand(["reset", "HEAD", "--", path], in: directory)
             DispatchQueue.main.async {
                 self.refreshGitChanges()
             }
@@ -2042,8 +2455,9 @@ struct DeveloperRootView: View {
 
     /// Switch to a different branch
     func switchBranch(to branchName: String) {
+        let directory = workingDirectory
         DispatchQueue.global(qos: .userInitiated).async {
-            let result = self.runGitCommand(["checkout", branchName])
+            let result = self.runGitCommand(["checkout", branchName], in: directory)
 
             #if DEBUG
             print("Branch switch result: \(result ?? "nil")")
@@ -2072,13 +2486,29 @@ struct DeveloperRootView: View {
 
     // MARK: - Logic
 
-    func createNewChat() {
-        // Save current if needed
-        if let idx = sessions.firstIndex(where: { $0.id == currentSessionId }) {
-            sessions[idx].messages = messages
+    /// Opens the main pane on an empty draft thread for the current project.
+    func beginEmptyAgentSession() {
+        orchestrator.store.ensureDefaultWorkspace(projectPath: workingDirectory)
+        orchestrator.store.pruneDuplicateEmptyThreads()
+        createNewChat(forceNew: false)
+    }
+
+    func createNewChat(forceNew: Bool = false) {
+        persistCurrentThread()
+
+        orchestrator.store.ensureDefaultWorkspace(projectPath: workingDirectory)
+
+        if !forceNew,
+           let project = orchestrator.store.selectedProject,
+           let emptyThread = project.threads.first(where: {
+               $0.messages.isEmpty && ($0.title == "New Chat" || $0.title == "New Thread")
+           }) {
+            switchChat(to: emptyThread.id)
+            return
         }
-        
-        let newSession = ChatSession(id: UUID(), title: "New Chat", messages: [], lastModified: Date())
+
+        let thread = orchestrator.store.createThread()
+        let newSession = thread.asChatSession
         sessions.insert(newSession, at: 0)
         currentSessionId = newSession.id
         messages = []
@@ -2093,6 +2523,30 @@ struct DeveloperRootView: View {
         currentModelUsed = nil
         
         PersistenceController.shared.save(sessions: sessions) // Persist immediately
+        prewarmAgentIfNeeded()
+    }
+
+    func persistCurrentThread() {
+        if let idx = sessions.firstIndex(where: { $0.id == currentSessionId }) {
+            sessions[idx].messages = messages
+            sessions[idx].lastModified = Date()
+            if let firstUser = messages.first(where: { $0.role == "user" }) {
+                let title = String(firstUser.content.prefix(40))
+                if !title.isEmpty, sessions[idx].title == "New Chat" || sessions[idx].title == "New Thread" {
+                    sessions[idx].title = title
+                }
+            }
+        }
+        PersistenceController.shared.save(sessions: sessions)
+
+        if var thread = orchestrator.store.allThreadsFlat().first(where: { $0.id == currentSessionId }) {
+            thread.messages = messages
+            thread.lastModified = Date()
+            if let idx = sessions.firstIndex(where: { $0.id == currentSessionId }) {
+                thread.title = sessions[idx].title
+            }
+            orchestrator.store.updateThread(thread)
+        }
     }
     
     /// Ensures the current session exists in the sidebar. Called when user starts typing.
@@ -2107,15 +2561,19 @@ struct DeveloperRootView: View {
     }
     
     func switchChat(to id: UUID) {
-        // Save current
-        if let idx = sessions.firstIndex(where: { $0.id == currentSessionId }) {
-            sessions[idx].messages = messages
-        }
+        persistCurrentThread()
+        orchestrator.store.select(threadId: id)
         
         // Load new
-        guard let session = sessions.first(where: { $0.id == id }) else { return }
-        currentSessionId = id
-        messages = session.messages
+        if let thread = orchestrator.store.allThreadsFlat().first(where: { $0.id == id }) {
+            currentSessionId = id
+            messages = thread.messages
+        } else if let session = sessions.first(where: { $0.id == id }) {
+            currentSessionId = id
+            messages = session.messages
+        } else {
+            return
+        }
         isShowingConsole = false // Exit console when switching chats
         
         // Reset context window counters for new session
@@ -2125,9 +2583,87 @@ struct DeveloperRootView: View {
         lastInputTokens = 0
         lastOutputTokens = 0
         currentModelUsed = nil
+        prewarmAgentIfNeeded()
+    }
+    
+    func prewarmAgentIfNeeded() {
+        guard grokBuildMode != .chat else {
+            orchestrator.stop()
+            return
+        }
+        _ = workingDirectory.startAccessingSecurityScopedResource()
+        let projectPath = workingDirectory.standardizedFileURL.resolvingSymlinksInPath()
+        let acpModel = ModelRegistry.resolveACPModel(selected: selectedModel, availableModels: availableModels)
+        if !orchestrator.hasWarmSession(
+            threadId: currentSessionId,
+            projectPath: projectPath,
+            mode: grokBuildMode,
+            model: acpModel
+        ) {
+            orchestrator.warmSession(
+                projectPath: projectPath,
+                mode: grokBuildMode,
+                threadId: currentSessionId,
+                model: acpModel
+            )
+        }
+    }
+
+    private var activityStatusLabel: String {
+        let base = requestStatus.isEmpty ? "Working…" : requestStatus
+        guard let start = requestStartTime else { return base }
+        let elapsed = Int(Date().timeIntervalSince(start))
+        if elapsed >= 45 {
+            return "\(base) · \(elapsed)s · tap Stop if stuck"
+        }
+        if elapsed >= 3 {
+            return "\(base) · \(elapsed)s"
+        }
+        return base
+    }
+
+    private func statusText(for message: ChatMessage) -> String {
+        guard isSending, message.id == activeAssistantMessageId else { return "" }
+        return activityStatusLabel
+    }
+
+    private func appendAgentActivity(
+        to messageId: UUID,
+        icon: String,
+        title: String,
+        detail: String? = nil,
+        inProgress: Bool = true
+    ) {
+        guard let idx = messages.firstIndex(where: { $0.id == messageId }) else { return }
+        if let last = messages[idx].activityLines.last,
+           last.title == title,
+           last.detail == detail,
+           last.isInProgress == inProgress {
+            return
+        }
+        if inProgress, var last = messages[idx].activityLines.last, last.isInProgress {
+            last.isInProgress = false
+            messages[idx].activityLines[messages[idx].activityLines.count - 1] = last
+        }
+        messages[idx].activityLines.append(
+            AgentActivityLine(icon: icon, title: title, detail: detail, isInProgress: inProgress)
+        )
+        requestStatus = title
+    }
+
+    private func completeAgentActivity(for messageId: UUID) {
+        guard let idx = messages.firstIndex(where: { $0.id == messageId }) else { return }
+        messages[idx].activityLines.removeAll { $0.isTransient }
+        guard !messages[idx].activityLines.isEmpty else { return }
+        var last = messages[idx].activityLines[messages[idx].activityLines.count - 1]
+        if last.isInProgress {
+            last.isInProgress = false
+            messages[idx].activityLines[messages[idx].activityLines.count - 1] = last
+        }
     }
     
     func deleteChat(_ session: ChatSession) {
+        orchestrator.store.deleteThread(session.id)
         if let idx = sessions.firstIndex(where: { $0.id == session.id }) {
             sessions.remove(at: idx)
             PersistenceController.shared.save(sessions: sessions)
@@ -2144,6 +2680,7 @@ struct DeveloperRootView: View {
     }
     
     func renameChat(_ session: ChatSession, newTitle: String) {
+        orchestrator.store.renameThread(session.id, title: newTitle)
         if let idx = sessions.firstIndex(where: { $0.id == session.id }) {
             sessions[idx].title = newTitle
             PersistenceController.shared.save(sessions: sessions)
@@ -2151,20 +2688,28 @@ struct DeveloperRootView: View {
     }
     
     func refreshFileList() {
-        // If no bookmark, don't show anything (or show empty)
-        if workingDirectoryBookmark == nil {
+        guard hasProjectFolder else {
             fileTree = []
             return
         }
         
-        // Simple 1-level listing for now to avoid freezing UI
         do {
-            let urls = try FileManager.default.contentsOfDirectory(at: workingDirectory, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])
-            fileTree = urls.map { url in
+            let urls = try FileManager.default.contentsOfDirectory(
+                at: workingDirectory,
+                includingPropertiesForKeys: [.isDirectoryKey, .isHiddenKey],
+                options: [.skipsHiddenFiles, .skipsSubdirectoryDescendants]
+            )
+            fileTree = urls
+                .filter { url in
+                    let name = url.lastPathComponent
+                    if name.hasPrefix("augment-zsh-") { return false }
+                    if name.hasPrefix(".") { return false }
+                    return true
+                }
+                .map { url in
                 let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
                 return FileSystemItem(name: url.lastPathComponent, url: url, isDirectory: isDir, children: nil)
             }.sorted { lhs, rhs in
-                // Sort: directories first, then alphabetically
                 if lhs.isDirectory != rhs.isDirectory {
                     return lhs.isDirectory
                 }
@@ -2185,7 +2730,7 @@ struct DeveloperRootView: View {
         // Stop any existing monitor first
         stopFileSystemMonitoring()
 
-        guard workingDirectoryBookmark != nil else { return }
+        guard hasProjectFolder else { return }
 
         // Open file descriptor for the directory
         let path = workingDirectory.path
@@ -2254,26 +2799,25 @@ struct DeveloperRootView: View {
             return
         }
 
-        // Run git commands asynchronously to avoid blocking UI
-        DispatchQueue.global(qos: .userInitiated).async {
-            let repoRoot = self.runGitCommand(["rev-parse", "--show-toplevel"])?.trimmingCharacters(in: .whitespacesAndNewlines)
-            let workingPath = self.workingDirectory.path
+        let directory = workingDirectory
 
-            // Only show git status if the selected folder IS the git repository root
-            // Don't show parent repo status when viewing a subfolder
+        DispatchQueue.global(qos: .userInitiated).async {
+            let repoRoot = self.runGitCommand(["rev-parse", "--show-toplevel"], in: directory)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let workingPath = directory.path
+
             let isRepoRoot = (repoRoot == workingPath)
 
             if isRepoRoot {
-                let branch = self.runGitCommand(["rev-parse", "--abbrev-ref", "HEAD"])
-                let status = self.runGitCommand(["status", "--porcelain"])
-                let branchList = self.runGitCommand(["branch", "--format=%(refname:short)"])
+                let branch = self.runGitCommand(["rev-parse", "--abbrev-ref", "HEAD"], in: directory)
+                let status = self.runGitCommand(["status", "--porcelain"], in: directory)
+                let branchList = self.runGitCommand(["branch", "--format=%(refname:short)"], in: directory)
 
                 DispatchQueue.main.async {
                     self.gitBranch = branch?.trimmingCharacters(in: .whitespacesAndNewlines)
                     self.hasUncommittedChanges = !(status?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
                     self.gitRepositoryPath = repoRoot
 
-                    // Parse branch list
                     if let branches = branchList {
                         self.gitBranches = branches
                             .split(separator: "\n")
@@ -2284,7 +2828,6 @@ struct DeveloperRootView: View {
                     }
                 }
             } else {
-                // Selected folder is not a git repo root (either no repo, or a subfolder of a repo)
                 DispatchQueue.main.async {
                     self.gitBranch = nil
                     self.gitBranches = []
@@ -2295,32 +2838,47 @@ struct DeveloperRootView: View {
         }
     }
 
-    /// Run a git command in the working directory
-    private func runGitCommand(_ arguments: [String]) -> String? {
+    /// Run a git command in the given directory (safe for background queues).
+    private func runGitCommand(_ arguments: [String], in directory: URL) -> String? {
+        guard FileManager.default.fileExists(atPath: directory.path) else { return nil }
+
         let task = Process()
         let pipe = Pipe()
 
-        task.launchPath = "/usr/bin/git"
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/git")
         task.arguments = arguments
-        task.currentDirectoryURL = workingDirectory
+        task.currentDirectoryURL = directory
         task.standardOutput = pipe
         task.standardError = FileHandle.nullDevice
 
         do {
             try task.run()
-            task.waitUntilExit()
-
-            if task.terminationStatus == 0 {
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                return String(data: data, encoding: .utf8)
-            }
         } catch {
             #if DEBUG
-            print("Git command failed: \(error)")
+            print("Git command failed to launch: \(error)")
             #endif
+            return nil
         }
 
-        return nil
+        pipe.fileHandleForWriting.closeFile()
+        task.waitUntilExit()
+
+        guard task.terminationStatus == 0 else {
+            try? pipe.fileHandleForReading.close()
+            return nil
+        }
+
+        let handle = pipe.fileHandleForReading
+        var output = Data()
+        while true {
+            let chunk = handle.availableData
+            if chunk.isEmpty { break }
+            output.append(chunk)
+        }
+        try? handle.close()
+
+        guard !output.isEmpty else { return "" }
+        return String(data: output, encoding: .utf8)
     }
 
     /// Refresh the list of changed files in git
@@ -2330,9 +2888,10 @@ struct DeveloperRootView: View {
             return
         }
 
+        let directory = workingDirectory
+
         DispatchQueue.global(qos: .userInitiated).async {
-            // Get status with porcelain format
-            guard let status = self.runGitCommand(["status", "--porcelain"]) else {
+            guard let status = self.runGitCommand(["status", "--porcelain"], in: directory) else {
                 DispatchQueue.main.async {
                     self.gitChangedFiles = []
                 }
@@ -2385,7 +2944,7 @@ struct DeveloperRootView: View {
                 default: gitStatus = .modified
                 }
 
-                let url = self.workingDirectory.appendingPathComponent(filePath)
+                let url = directory.appendingPathComponent(filePath)
                 return GitFileChange(path: filePath, status: gitStatus, url: url, isStaged: isStaged)
             }
 
@@ -2404,8 +2963,9 @@ struct DeveloperRootView: View {
 
     /// Stage a file for commit
     func stageFile(_ path: String) {
+        let directory = workingDirectory
         DispatchQueue.global(qos: .userInitiated).async {
-            _ = self.runGitCommand(["add", path])
+            _ = self.runGitCommand(["add", path], in: directory)
             DispatchQueue.main.async {
                 self.refreshGitChanges()
             }
@@ -2414,8 +2974,9 @@ struct DeveloperRootView: View {
 
     /// Discard changes to a file
     func discardChanges(_ path: String) {
+        let directory = workingDirectory
         DispatchQueue.global(qos: .userInitiated).async {
-            _ = self.runGitCommand(["checkout", "--", path])
+            _ = self.runGitCommand(["checkout", "--", path], in: directory)
             DispatchQueue.main.async {
                 self.refreshGitChanges()
                 self.refreshGitStatus()
@@ -2429,24 +2990,22 @@ struct DeveloperRootView: View {
 
         let message = commitMessage
         let needsStageAll = stagedFiles.isEmpty
+        let directory = workingDirectory
         commitMessage = "" // Clear immediately for UX
 
         DispatchQueue.global(qos: .userInitiated).async {
             if needsStageAll {
-                // No staged files - stage all changes first
-                _ = self.runGitCommand(["add", "-A"])
+                _ = self.runGitCommand(["add", "-A"], in: directory)
             }
-            // Commit with message
-            let commitResult = self.runGitCommand(["commit", "-m", message])
+            let commitResult = self.runGitCommand(["commit", "-m", message], in: directory)
 
             #if DEBUG
             print("Commit result: \(commitResult ?? "nil")")
             #endif
 
-            // Refresh git status directly on background thread
-            let status = self.runGitCommand(["status", "--porcelain"])
-            let branch = self.runGitCommand(["rev-parse", "--abbrev-ref", "HEAD"])
-            let branchList = self.runGitCommand(["branch", "--format=%(refname:short)"])
+            let status = self.runGitCommand(["status", "--porcelain"], in: directory)
+            let branch = self.runGitCommand(["rev-parse", "--abbrev-ref", "HEAD"], in: directory)
+            let branchList = self.runGitCommand(["branch", "--format=%(refname:short)"], in: directory)
 
             // Update UI on main thread
             DispatchQueue.main.async {
@@ -2781,10 +3340,12 @@ struct DeveloperRootView: View {
     }
     
     func generateSessionTitle() {
-        guard let url = URL(string: "https://api.x.ai/v1/chat/completions") else { return }
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        authTokenForRequest { token in
+            guard let token, !token.isEmpty,
+                  let url = URL(string: "https://api.x.ai/v1/chat/completions") else { return }
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         
         let history = messages.prefix(4).map { ["role": $0.role, "content": $0.content] }
@@ -2816,6 +3377,7 @@ struct DeveloperRootView: View {
                    }
             }
         }.resume()
+        }
     }
     
     // MARK: - Actions
@@ -2893,23 +3455,86 @@ struct DeveloperRootView: View {
         }
     }
     
-    func selectDirectory() {
+    func startNewAgent() {
+        openProjectFolderViaPanel(startNewAgent: true)
+    }
+
+    func openProjectFolderViaPanel(startNewAgent: Bool) {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
-        panel.message = "Select a folder for Grok to focus on."
-        
-        if panel.runModal() == .OK {
-            if let url = panel.url {
-                saveBookmark(for: url)
-                workingDirectory = url
-                refreshFileList()
-                refreshGitStatus()
+        panel.message = startNewAgent
+            ? "Choose a folder for this agent. Grok Build will use it as the working directory."
+            : "Select a project folder for Grok Build."
+        panel.prompt = startNewAgent ? "Select Folder" : "Open"
 
-                // Start monitoring the new directory
-                startFileSystemMonitoring()
-            }
+        if panel.runModal() == .OK, let url = panel.url {
+            openProjectFolder(url, startNewAgent: startNewAgent)
+        }
+    }
+
+    func openProjectFolder(_ url: URL, startNewAgent: Bool) {
+        guard Self.isUsableProjectDirectory(url) else { return }
+        _ = url.startAccessingSecurityScopedResource()
+        saveBookmark(for: url)
+        workingDirectory = url
+        refreshFileList()
+        startFileSystemMonitoring()
+
+        let project = orchestrator.store.ensureDefaultWorkspace(projectPath: url)
+        orchestrator.store.select(projectId: project.id)
+        orchestrator.store.pruneDuplicateEmptyThreads()
+
+        sessions = orchestrator.store.allThreadsFlat().map { $0.asChatSession }
+
+        if startNewAgent {
+            createNewChat(forceNew: true)
+        } else {
+            beginEmptyAgentSession()
+        }
+
+        prewarmAgentIfNeeded()
+        refreshGitStatus()
+    }
+
+    func activateProject(_ project: AgentProject) {
+        let normalizedCurrent = workingDirectory.standardizedFileURL.path
+        let normalizedProject = project.url.standardizedFileURL.path
+
+        orchestrator.store.select(projectId: project.id)
+
+        if normalizedCurrent != normalizedProject {
+            openProjectFolder(project.url, startNewAgent: false)
+            return
+        }
+
+        sessions = orchestrator.store.allThreadsFlat().map { $0.asChatSession }
+        beginEmptyAgentSession()
+    }
+
+    func activateThread(_ thread: AgentThread, project: AgentProject) {
+        let normalizedCurrent = workingDirectory.standardizedFileURL.path
+        let normalizedProject = project.url.standardizedFileURL.path
+
+        orchestrator.store.select(projectId: project.id)
+        orchestrator.store.select(threadId: thread.id)
+        orchestrator.store.setThreadUnread(thread.id, unread: false)
+
+        if normalizedCurrent != normalizedProject {
+            openProjectFolder(project.url, startNewAgent: false)
+        }
+
+        switchChat(to: thread.id)
+    }
+
+    func selectDirectory() {
+        openProjectFolderViaPanel(startNewAgent: false)
+    }
+
+    func openSettings() {
+        if let appDelegate = NSApp.delegate as? AppDelegate {
+            appDelegate.showSettings(nil)
         }
     }
     
@@ -2933,11 +3558,17 @@ struct DeveloperRootView: View {
             if isStale {
                 saveBookmark(for: url)
             }
+            guard Self.isUsableProjectDirectory(url) else {
+                workingDirectoryBookmark = nil
+                fileTree = []
+                stopFileSystemMonitoring()
+                return
+            }
             if url.startAccessingSecurityScopedResource() {
                 workingDirectory = url
-
-                // Start monitoring the restored directory
                 startFileSystemMonitoring()
+                let project = orchestrator.store.ensureDefaultWorkspace(projectPath: url)
+                orchestrator.store.select(projectId: project.id)
             } else {
                 #if DEBUG
                 print("Failed to access security scoped resource")
@@ -2958,10 +3589,19 @@ struct DeveloperRootView: View {
         isLoadingModels = true
         errorMessage = nil
         
-        guard let url = URL(string: "https://api.x.ai/v1/models") else { return }
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        authTokenForRequest { token in
+            guard let token, !token.isEmpty else {
+                DispatchQueue.main.async {
+                    self.isLoadingModels = false
+                    self.errorMessage = "Sign in with Grok Build or add an API key in Settings."
+                }
+                return
+            }
+            
+            guard let url = URL(string: "https://api.x.ai/v1/models") else { return }
+            var request = URLRequest(url: url)
+            request.httpMethod = "GET"
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         
         URLSession.shared.dataTask(with: request) { data, response, error in
             DispatchQueue.main.async {
@@ -2984,7 +3624,7 @@ struct DeveloperRootView: View {
                 
                 do {
                     let decoded = try JSONDecoder().decode(ModelResponse.self, from: data)
-                    self.availableModels = decoded.data.map { $0.id }.sorted()
+                    self.availableModels = ModelRegistry.sortedDisplayModels(decoded.data.map { $0.id })
 
                     // Debug: Log available models
                     #if DEBUG
@@ -3017,6 +3657,7 @@ struct DeveloperRootView: View {
                 }
             }
         }.resume()
+        }
     }
 
     func sendMessage() {
@@ -3039,29 +3680,240 @@ struct DeveloperRootView: View {
 
         // 2. Add Placeholder Assistant Message
         let assistantMsgId = UUID()
+        activeAssistantMessageId = assistantMsgId
         messages.append(ChatMessage(id: assistantMsgId, role: "assistant", content: "", isThinking: true))
 
         // 3. Resolve Model (Smart Selection) - Check the user message's imageData, not inputImage (already cleared)
         // Pass availableModels and messageText to ensure smart model selection based on task type
-        let modelToUse = ModelRegistry.resolveModel(
+        let modelToUse = ModelRegistry.resolveAPIModel(
             selected: selectedModel,
             hasImage: newUserMsg.imageData != nil,
             textLength: userMsg.count,
             messageText: userMsg,
-            availableModels: availableModels
+            availableModels: availableModels,
+            useGrokBuildOAuth: grokBuildAuth.isUsingGrokBuildSession
         )
 
         // Set initial status
         requestStatus = "Connecting..."
 
-        performAPICall(assistantMsgId: assistantMsgId, modelID: modelToUse)
+        authTokenForRequest { token in
+            guard let token, !token.isEmpty else {
+                self.isSending = false
+                self.requestStatus = ""
+                self.requestStartTime = nil
+                self.activeAssistantMessageId = nil
+                if let idx = self.messages.firstIndex(where: { $0.id == assistantMsgId }) {
+                    self.messages[idx].content = "❌ Not authenticated. Sign in with Grok Build (`grok login`) or add an API key in Settings."
+                    self.messages[idx].isThinking = false
+                }
+                return
+            }
+
+            if self.orchestrator.shouldUseACP(
+                auth: self.grokBuildAuth,
+                threadId: self.currentSessionId,
+                projectPath: self.workingDirectory,
+                mode: self.grokBuildMode,
+                text: userMsg,
+                model: ModelRegistry.resolveACPModel(selected: self.selectedModel, availableModels: self.availableModels)
+            ) {
+                self.performACPPrompt(assistantMsgId: assistantMsgId, userText: userMsg, modelID: modelToUse, authToken: token)
+                return
+            }
+
+            self.performAPICall(assistantMsgId: assistantMsgId, modelID: modelToUse, authToken: token)
+        }
+    }
+
+    /// Route prompt through official `grok agent stdio` ACP adapter.
+    func performACPPrompt(assistantMsgId: UUID, userText: String, modelID: String, authToken: String) {
+        _ = workingDirectory.startAccessingSecurityScopedResource()
+        let projectPath = workingDirectory.standardizedFileURL.resolvingSymlinksInPath()
+        let acpModel = ModelRegistry.resolveACPModel(selected: selectedModel, availableModels: availableModels)
+        requestStatus = orchestrator.hasWarmSession(
+            threadId: currentSessionId,
+            projectPath: projectPath,
+            mode: grokBuildMode,
+            model: acpModel
+        ) ? "Grok CLI…" : "Starting Grok CLI…"
+
+        orchestrator.sendPrompt(
+            text: userText,
+            threadId: currentSessionId,
+            projectPath: projectPath,
+            mode: grokBuildMode,
+            model: acpModel,
+            assistantMessageId: assistantMsgId,
+            onUpdate: { _, update in
+                update(&self.messages)
+            },
+            onComplete: {
+                self.completeAgentActivity(for: assistantMsgId)
+                self.isSending = false
+                self.requestStatus = ""
+                self.requestStartTime = nil
+                self.activeAssistantMessageId = nil
+                self.persistCurrentThread()
+            },
+            onStatusChange: { status in
+                self.requestStatus = status
+            },
+            onFailure: {
+                self.performAgentFallback(
+                    assistantMsgId: assistantMsgId,
+                    userText: userText,
+                    modelID: modelID,
+                    authToken: authToken
+                )
+            }
+        )
+    }
+
+    /// When Grok CLI fails, try local tools for simple ops, then REST API.
+    func performAgentFallback(assistantMsgId: UUID, userText: String, modelID: String, authToken: String) {
+        if ModelRegistry.messageAsksForDirectoryListing(userText) {
+            performLocalDirectoryListing(assistantMsgId: assistantMsgId)
+            return
+        }
+        if grokBuildMode != .chat, let folderName = ModelRegistry.parseCreateFolderRequest(userText) {
+            performLocalCreateFolder(assistantMsgId: assistantMsgId, folderName: folderName)
+            return
+        }
+        if let idx = messages.firstIndex(where: { $0.id == assistantMsgId }) {
+            messages[idx].content = ""
+            messages[idx].isThinking = true
+        }
+        isSending = true
+        requestStatus = "API fallback…"
+        performAPICall(assistantMsgId: assistantMsgId, modelID: modelID, authToken: authToken)
+    }
+
+    /// Lists the workspace folder locally — no API or ACP required.
+    func performLocalDirectoryListing(assistantMsgId: UUID) {
+        _ = workingDirectory.startAccessingSecurityScopedResource()
+        let folderURL = workingDirectory.standardizedFileURL.resolvingSymlinksInPath()
+        requestStatus = "Listing folder…"
+        appendAgentActivity(to: assistantMsgId, icon: "folder", title: "Listing folder", detail: folderURL.lastPathComponent)
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            let output: String
+            if !FileManager.default.fileExists(atPath: folderURL.path) {
+                output = "❌ Folder not found:\n\(folderURL.path)"
+            } else {
+                do {
+                    let contents = try FileManager.default.contentsOfDirectory(
+                        at: folderURL,
+                        includingPropertiesForKeys: [.isDirectoryKey, .isHiddenKey],
+                        options: [.skipsHiddenFiles]
+                    )
+                    let sorted = contents.sorted {
+                        $0.lastPathComponent.localizedCaseInsensitiveCompare($1.lastPathComponent) == .orderedAscending
+                    }
+                    var lines = ["**\(folderURL.lastPathComponent)**", ""]
+                    lines.append("Path: `\(folderURL.path)`")
+                    lines.append("")
+                    if sorted.isEmpty {
+                        lines.append("_(empty folder)_")
+                    } else {
+                        for item in sorted {
+                            let isDir = (try? item.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+                            lines.append(isDir ? "📁 \(item.lastPathComponent)/" : "📄 \(item.lastPathComponent)")
+                        }
+                    }
+                    output = lines.joined(separator: "\n")
+                } catch {
+                    output = "❌ Could not list folder: \(error.localizedDescription)"
+                }
+            }
+
+            DispatchQueue.main.async {
+                guard let idx = self.messages.firstIndex(where: { $0.id == assistantMsgId }) else {
+                    self.isSending = false
+                    self.requestStatus = ""
+                    self.requestStartTime = nil
+                    self.activeAssistantMessageId = nil
+                    return
+                }
+                self.messages[idx].content = output
+                self.messages[idx].isThinking = false
+                self.messages[idx].usedModel = nil
+                self.completeAgentActivity(for: assistantMsgId)
+                self.isSending = false
+                self.requestStatus = ""
+                self.requestStartTime = nil
+                self.activeAssistantMessageId = nil
+                self.persistCurrentThread()
+            }
+        }
+    }
+
+    /// Creates a folder in the workspace locally — instant, no API/ACP required.
+    func performLocalCreateFolder(assistantMsgId: UUID, folderName: String) {
+        _ = workingDirectory.startAccessingSecurityScopedResource()
+        requestStatus = "Creating folder…"
+        appendAgentActivity(to: assistantMsgId, icon: "folder.badge.plus", title: "Creating folder", detail: folderName)
+
+        if grokBuildMode == .agent {
+            guard let idx = messages.firstIndex(where: { $0.id == assistantMsgId }) else {
+                isSending = false
+                requestStatus = ""
+                requestStartTime = nil
+                activeAssistantMessageId = nil
+                return
+            }
+            messages[idx].content = "Create folder **\(folderName)** in this workspace?"
+            messages[idx].pendingToolAction = .createDirectory(folderName)
+            messages[idx].isThinking = false
+            completeAgentActivity(for: assistantMsgId)
+            isSending = false
+            requestStatus = "Waiting for approval..."
+            requestStartTime = nil
+            activeAssistantMessageId = nil
+            persistCurrentThread()
+            return
+        }
+
+        executeToolActionAsync(.createDirectory(folderName)) { [self] output in
+            guard let idx = messages.firstIndex(where: { $0.id == assistantMsgId }) else {
+                isSending = false
+                requestStatus = ""
+                requestStartTime = nil
+                activeAssistantMessageId = nil
+                return
+            }
+            let succeeded = output.hasPrefix("Created directory:")
+            messages[idx].content = succeeded
+                ? "Created folder **\(folderName)**."
+                : output
+            messages[idx].toolAction = "Create folder \(folderName)"
+            messages[idx].toolOutput = output
+            messages[idx].isThinking = false
+            completeAgentActivity(for: assistantMsgId)
+            appendAgentActivity(
+                to: assistantMsgId,
+                icon: succeeded ? "checkmark.circle" : "xmark.circle",
+                title: succeeded ? "Folder created" : "Could not create folder",
+                detail: folderName,
+                inProgress: false
+            )
+            isSending = false
+            requestStatus = ""
+            requestStartTime = nil
+            activeAssistantMessageId = nil
+            persistCurrentThread()
+        }
     }
     
     func stopGeneration() {
+        if orchestrator.isACPActive {
+            orchestrator.stop()
+        }
         currentRequestId = nil  // Invalidate current request
         isSending = false
         requestStatus = ""
         requestStartTime = nil
+        activeAssistantMessageId = nil
 
         // Remove thinking message if present
         if let lastMsg = messages.last, lastMsg.isThinking {
@@ -3069,7 +3921,8 @@ struct DeveloperRootView: View {
         }
     }
     
-    func performAPICall(assistantMsgId: UUID, modelID: String) {
+    func performAPICall(assistantMsgId: UUID, modelID: String, authToken: String) {
+        activeAssistantMessageId = assistantMsgId
         // Capture session ID at start to prevent race condition
         let sessionIdAtStart = self.currentSessionId
 
@@ -3080,7 +3933,7 @@ struct DeveloperRootView: View {
         guard let url = URL(string: "https://api.x.ai/v1/chat/completions") else { return }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.timeoutInterval = 120 // 2 minute timeout for API calls
         
@@ -3104,52 +3957,64 @@ struct DeveloperRootView: View {
             }
         }
         
-        // System Prompt with Tool Definition
+        // System Prompt with Tool Definition (Grok Build Agent)
+        let registry = GrokBuildToolRegistry.shared
+        let mode = grokBuildMode
+        
+        var modeInstruction = ""
+        switch mode {
+        case .chat:
+            modeInstruction = """
+            You are in **CHAT MODE**.
+            - Answer questions and explore the project with read-only tools (list_directory, read_file, get_working_directory).
+            - **Do NOT execute** writes, mkdir, run_command, or destructive shell commands.
+            - If the user wants changes made, suggest switching to Agent mode.
+            """
+        case .agent:
+            modeInstruction = """
+            You are in **AGENT MODE** (human-in-the-loop).
+            - You can propose tool calls.
+            - The user will review and approve each action before it runs.
+            - Be careful with destructive operations.
+            """
+        case .agentAuto:
+            modeInstruction = """
+            You are in **AGENT (AUTO) MODE**.
+            - You have full autonomy.
+            - Execute tool calls as needed to complete the user's request.
+            - Still respect the Safety Mode setting.
+            """
+        }
+        
         let toolsInstruction = """
-        You are Grok, an expert developer with access to the macOS terminal and file system.
+        You are Grok Build, an expert developer agent running inside the macOS Grok Build app.
         Current Working Directory: \(workingDirectory.path)
         Safety Mode: \(safetyEnabled ? "ENABLED (Destructive commands blocked)" : "DISABLED")
+        Current Mode: \(mode.displayName)
         
-        CAPABILITIES:
-        1. TERMINAL: Run shell commands (ls, git, mkdir, etc).
-        2. READ FILE: Read file contents natively.
-        3. WRITE FILE: Write content to files natively.
-        4. FETCH WEB: Fetch text content from a URL.
-        5. SEARCH WEB: Search the web for information (DuckDuckGo).
+        \(modeInstruction)
         
-        TOOL USE FORMAT (Output strictly valid JSON):
+        AVAILABLE TOOLS:
+        \(registry.allToolDescriptions())
         
-        For Terminal:
+        TOOL USE FORMAT:
+        When you need to use a tool, output **only** a valid JSON object like this (no extra text):
+        
         ```json
-        { "tool": "terminal", "command": "ls -la" }
+        {
+          "tool": "tool_name",
+          "arguments": {
+            "param1": "value1",
+            "param2": "value2"
+          }
+        }
         ```
         
-        For Read File:
-        ```json
-        { "tool": "read_file", "path": "Sources/ContentView.swift" }
-        ```
+        After receiving the tool result, continue reasoning and use more tools if needed until the task is complete.
+        When the task is done, give a final clear answer to the user.
         
-        For Write File:
-        ```json
-        { "tool": "write_file", "path": "README.md", "content": "# My Project" }
-        ```
-        
-        For Fetch Web:
-        ```json
-        { "tool": "fetch_web", "url": "https://example.com" }
-        ```
-        
-        For Search Web:
-        ```json
-        { "tool": "search_web", "query": "swiftui layout guide" }
-        ```
-        
-        IMPORTANT:
-        - Only return ONE tool call per message.
-        - Wait for the "Tool Output" before proceeding.
-        
-        Output only the JSON block when using a tool.
-        After you receive the tool output, analyze it and answer the user's question.
+        IMPORTANT: If the user asks what is in a folder, directory, or project, call `list_directory` immediately (use `"."` for the current workspace). Do not reply that you will check — run the tool first.
+        If the user asks to create a folder, call `create_directory` with the folder name immediately. Do not reply that you will create it — run the tool first.
         """
         
         apiMessages.insert(["role": "system", "content": toolsInstruction], at: 0)
@@ -3200,6 +4065,8 @@ struct DeveloperRootView: View {
                     isSending = false
                     requestStatus = ""
                     requestStartTime = nil
+                    activeAssistantMessageId = nil
+                    activeAssistantMessageId = nil
                     return
                 }
 
@@ -3231,6 +4098,7 @@ struct DeveloperRootView: View {
                     isSending = false
                     requestStatus = ""
                     requestStartTime = nil
+                    activeAssistantMessageId = nil
                     return
                 }
 
@@ -3242,9 +4110,26 @@ struct DeveloperRootView: View {
 
                     // Provide context for common errors
                     if httpResponse.statusCode == 401 {
-                        userFriendlyError = "Authentication failed. Please check your API key in Settings."
+                        userFriendlyError = grokBuildAuth.isUsingGrokBuildSession
+                            ? "Grok Build session expired. Run `grok login` in Terminal, then reopen Build."
+                            : "Authentication failed. Sign in with Grok Build or check your API key in Settings."
                     } else if httpResponse.statusCode == 429 {
                         userFriendlyError = "Rate limit exceeded. Please wait a moment and try again."
+                    } else if httpResponse.statusCode == 403 {
+                        let fallbackModels = ModelRegistry.fallbackModels(
+                            excluding: modelID,
+                            from: self.availableModels.isEmpty ? ModelRegistry.oauthCompatibleModels : self.availableModels
+                        )
+                        for fallbackModel in fallbackModels {
+                            messages[index].content = ""
+                            messages[index].isThinking = true
+                            requestStatus = "Retrying with \(ModelRegistry.shortName(for: fallbackModel))..."
+                            self.performAPICall(assistantMsgId: assistantMsgId, modelID: fallbackModel, authToken: authToken)
+                            return
+                        }
+                        userFriendlyError = grokBuildAuth.isUsingGrokBuildSession
+                            ? "Model '\(ModelRegistry.friendlyName(for: modelID))' isn't available on your Grok Build plan via the API. Try the **Build** model or use the Grok agent when ready."
+                            : errorMsg
                     } else if httpResponse.statusCode == 400 {
                         // Model might not be available - try fallback with latest models first
                         #if DEBUG
@@ -3252,27 +4137,20 @@ struct DeveloperRootView: View {
                         print("   Available models: \(self.availableModels)")
                         #endif
 
-                        // Fallback models in order of preference (latest first, then legacy)
-                        let fallbackModels = [
-                            "grok-4-1-fast-non-reasoning",  // Latest fast
-                            "grok-4-fast-non-reasoning",    // Fast
-                            "grok-code-fast-1",             // Coding fast
-                            "grok-2-1212",                  // Legacy reliable
-                            "grok-beta"                     // Legacy fallback
-                        ]
+                        let fallbackModels = ModelRegistry.fallbackModels(
+                            excluding: modelID,
+                            from: self.availableModels.isEmpty ? ModelRegistry.defaultModelPreference : self.availableModels
+                        )
 
-                        // Try to find a working fallback model
                         for fallbackModel in fallbackModels {
-                            if fallbackModel != modelID {
-                                #if DEBUG
-                                print("   🔄 Retrying with fallback model: \(fallbackModel)")
-                                #endif
-                                messages[index].content = ""
-                                messages[index].isThinking = true
-                                requestStatus = "Retrying..."
-                                self.performAPICall(assistantMsgId: assistantMsgId, modelID: fallbackModel)
-                                return
-                            }
+                            #if DEBUG
+                            print("   🔄 Retrying with fallback model: \(fallbackModel)")
+                            #endif
+                            messages[index].content = ""
+                            messages[index].isThinking = true
+                            requestStatus = "Retrying..."
+                            self.performAPICall(assistantMsgId: assistantMsgId, modelID: fallbackModel, authToken: authToken)
+                            return
                         }
 
                         userFriendlyError = "Model '\(modelID)' is not available. \(errorMsg)"
@@ -3287,6 +4165,7 @@ struct DeveloperRootView: View {
                     isSending = false
                     requestStatus = ""
                     requestStartTime = nil
+                    activeAssistantMessageId = nil
                     return
                 }
 
@@ -3296,6 +4175,7 @@ struct DeveloperRootView: View {
                     isSending = false
                     requestStatus = ""
                     requestStartTime = nil
+                    activeAssistantMessageId = nil
                     return
                 }
 
@@ -3352,33 +4232,103 @@ struct DeveloperRootView: View {
                     
                     messages[index].content = content
                     
-                    // CHECK FOR TOOLS
+                    // CHECK FOR TOOLS - Respect Grok Build Mode
                     if content.contains("\"tool\":") {
                         // Parse JSON from content block
                         if let action = parseToolAction(from: content) {
                             messages[index].isThinking = false
                             messages[index].toolAction = action.description
 
-                            // Update status for tool execution (simple, generic messages)
-                            switch action {
-                            case .terminal:
-                                requestStatus = "Running command..."
-                            case .readFile:
-                                requestStatus = "Reading file..."
-                            case .writeFile:
-                                requestStatus = "Writing file..."
-                            case .fetchWeb:
-                                requestStatus = "Fetching..."
-                            case .searchWeb:
-                                requestStatus = "Searching..."
-                            case .openURL:
-                                requestStatus = "Opening..."
-                            case .checkServerStatus:
-                                requestStatus = "Checking..."
+                            // === MODE-BASED BEHAVIOR ===
+                            switch grokBuildMode {
+                            case .chat:
+                                if action.isReadOnly {
+                                    break // execute read-only tools below
+                                } else {
+                                    messages[index].toolOutput = "💬 **Chat Mode** — Proposed action:\n\n\(action.description)\n\nThis was **not executed**. Switch to Agent or Agent (full auto) to run it."
+                                    messages[index].isThinking = false
+                                    isSending = false
+                                    requestStatus = ""
+                                    return
+                                }
+
+                            case .agent:
+                                // AGENT MODE: Ask for approval
+                                messages[index].toolOutput = "⏸️ Awaiting your approval to run:\n\n\(action.description)"
+                                messages[index].pendingToolAction = action
+                                messages[index].isThinking = false
+                                isSending = false
+                                requestStatus = "Waiting for approval..."
+                                return
+
+                            case .agentAuto:
+                                // AGENT (AUTO): Execute immediately
+                                break
                             }
 
-                            // 1. Run Action ASYNCHRONOUSLY to not block UI
+                            // Update status
+                            let activityDetail: String?
+                            let activityIcon: String
+                            let activityTitle: String
+                            switch action {
+                            case .terminal(let cmd):
+                                activityTitle = "Running command"
+                                activityDetail = cmd
+                                activityIcon = "terminal"
+                                requestStatus = "Running command..."
+                            case .readFile(let path):
+                                activityTitle = "Reading file"
+                                activityDetail = path
+                                activityIcon = "doc.text"
+                                requestStatus = "Reading file..."
+                            case .writeFile(let path, _):
+                                activityTitle = "Writing file"
+                                activityDetail = path
+                                activityIcon = "square.and.pencil"
+                                requestStatus = "Writing file..."
+                            case .createDirectory(let path):
+                                activityTitle = "Creating folder"
+                                activityDetail = path
+                                activityIcon = "folder.badge.plus"
+                                requestStatus = "Creating folder..."
+                            case .fetchWeb(let url):
+                                activityTitle = "Fetching URL"
+                                activityDetail = url
+                                activityIcon = "globe"
+                                requestStatus = "Fetching..."
+                            case .searchWeb(let query):
+                                activityTitle = "Searching web"
+                                activityDetail = query
+                                activityIcon = "magnifyingglass"
+                                requestStatus = "Searching..."
+                            case .openURL(let url):
+                                activityTitle = "Opening URL"
+                                activityDetail = url
+                                activityIcon = "link"
+                                requestStatus = "Opening..."
+                            case .checkServerStatus(let port):
+                                activityTitle = "Checking server"
+                                activityDetail = "localhost:\(port)"
+                                activityIcon = "network"
+                                requestStatus = "Checking..."
+                            }
+                            appendAgentActivity(
+                                to: assistantMsgId,
+                                icon: activityIcon,
+                                title: activityTitle,
+                                detail: activityDetail
+                            )
+
+                            // Execute tool
                             executeToolActionAsync(action) { [self] output in
+                                completeAgentActivity(for: assistantMsgId)
+                                appendAgentActivity(
+                                    to: assistantMsgId,
+                                    icon: "checkmark.circle",
+                                    title: "Tool finished",
+                                    detail: String(output.prefix(120)),
+                                    inProgress: false
+                                )
                                 // 2. Store tool execution data in the assistant's message for UI display
                                 messages[index].toolOutput = output
 
@@ -3401,18 +4351,25 @@ struct DeveloperRootView: View {
 
                                 // 4. Recursive Call to interpret result
                                 requestStatus = "Analyzing..."
+                                appendAgentActivity(
+                                    to: assistantMsgId,
+                                    icon: "brain.head.profile",
+                                    title: "Analyzing results"
+                                )
                                 let nextId = UUID()
                                 messages.append(ChatMessage(id: nextId, role: "assistant", content: "", isThinking: true))
-                                performAPICall(assistantMsgId: nextId, modelID: modelID)
+                                performAPICall(assistantMsgId: nextId, modelID: modelID, authToken: authToken)
                             }
                             return
                         }
                     }
 
                     messages[index].isThinking = false
+                    completeAgentActivity(for: assistantMsgId)
                     isSending = false
                     requestStatus = ""
                     requestStartTime = nil
+                    activeAssistantMessageId = nil
                     
                     // SAVE FINAL STATE
                     if let idx = sessions.firstIndex(where: { $0.id == currentSessionId }) {
@@ -3432,85 +4389,84 @@ struct DeveloperRootView: View {
                     isSending = false
                     requestStatus = ""
                     requestStartTime = nil
+                    activeAssistantMessageId = nil
                 }
             }
         }
     }
     
-    // MARK: - Tool Logic
-    
-    enum ToolAction {
-        case terminal(String)
-        case readFile(String)
-        case writeFile(String, String)
-        case fetchWeb(String)
-        case searchWeb(String)
-        case openURL(String)           // Open URL in browser (with localhost handling)
-        case checkServerStatus(Int)    // Check if a port is responding
+    // MARK: - Agent Mode Approval Helpers
 
-        // Human-readable description for UI display
-        var description: String {
-            switch self {
-            case .terminal(let cmd):
-                return cmd
-            case .readFile(let path):
-                return "Read \(path)"
-            case .writeFile(let path, _):
-                return "Write \(path)"
-            case .fetchWeb(let url):
-                return "Fetch \(url)"
-            case .searchWeb(let query):
-                return "Search: \(query)"
-            case .openURL(let url):
-                return "Open \(url)"
-            case .checkServerStatus(let port):
-                return "Check localhost:\(port)"
+    func approvePendingTool(messageId: UUID) {
+        guard let index = messages.firstIndex(where: { $0.id == messageId }),
+              let action = messages[index].pendingToolAction else { return }
+
+        messages[index].pendingToolAction = nil
+        messages[index].toolOutput = "✅ Approved by user. Executing..."
+
+        executeToolActionAsync(action) { [self] output in
+            messages[index].toolOutput = output
+
+            // Continue the agent loop
+            let nextId = UUID()
+            messages.append(ChatMessage(id: nextId, role: "assistant", content: "", isThinking: true))
+            authTokenForRequest { token in
+                guard let token, !token.isEmpty else { return }
+                performAPICall(assistantMsgId: nextId, modelID: selectedModel, authToken: token)
             }
         }
     }
+
+    func rejectPendingTool(messageId: UUID) {
+        guard let index = messages.firstIndex(where: { $0.id == messageId }) else { return }
+
+        let actionDesc = messages[index].pendingToolAction?.description ?? "action"
+        messages[index].pendingToolAction = nil
+        messages[index].toolOutput = "❌ Rejected by user."
+
+        // Tell the model it was rejected
+        let hiddenMessage = ChatMessage(role: "user", content: "The user rejected the proposed action: \(actionDesc)", isHiddenFromUI: true)
+        messages.append(hiddenMessage)
+
+        // Let the model replan
+        let nextId = UUID()
+        messages.append(ChatMessage(id: nextId, role: "assistant", content: "", isThinking: true))
+        authTokenForRequest { token in
+            guard let token, !token.isEmpty else { return }
+            performAPICall(assistantMsgId: nextId, modelID: selectedModel, authToken: token)
+        }
+    }
+
+    // MARK: - Tool Logic
     
     func parseToolAction(from text: String) -> ToolAction? {
-        // Robust JSON extraction
-        guard let startRange = text.range(of: "{"),
-              let endRange = text.range(of: "}", options: .backwards) else { return nil }
-        
-        let jsonString = String(text[startRange.lowerBound..<endRange.upperBound])
-        guard let data = jsonString.data(using: .utf8) else { return nil }
-        
-        struct ToolPayload: Decodable {
-            let tool: String
-            let command: String?
-            let path: String?
-            let content: String?
-            let url: String?
-            let query: String?
-            let port: Int?
-        }
+        guard let payload = GrokBuildToolParser.parsePayload(from: text),
+              let (toolName, args) = GrokBuildToolParser.normalize(payload) else { return nil }
 
-        do {
-            let payload = try JSONDecoder().decode(ToolPayload.self, from: data)
-            switch payload.tool {
-            case "terminal":
-                if let cmd = payload.command { return .terminal(cmd) }
-            case "read_file":
-                if let path = payload.path { return .readFile(path) }
-            case "write_file":
-                if let path = payload.path, let content = payload.content { return .writeFile(path, content) }
-            case "fetch_web":
-                if let url = payload.url { return .fetchWeb(url) }
-            case "search_web":
-                if let query = payload.query { return .searchWeb(query) }
-            case "open_url", "open_browser":
-                if let url = payload.url { return .openURL(url) }
-            case "check_server", "check_port":
-                if let port = payload.port { return .checkServerStatus(port) }
-            default:
-                return nil
-            }
-        } catch {
-            #if DEBUG
-            print("Failed to decode tool JSON: \(error)")
-            #endif
+        switch toolName {
+        case "terminal", "run_command", "run_terminal_command", "shell":
+            if let cmd = args["command"] { return .terminal(cmd) }
+        case "read_file":
+            if let path = args["path"] { return .readFile(path) }
+        case "write_file":
+            if let path = args["path"], let content = args["content"] { return .writeFile(path, content) }
+        case "create_directory", "mkdir":
+            if let path = args["path"] { return .createDirectory(path) }
+        case "list_directory":
+            if let path = args["path"], !path.isEmpty { return .terminal("ls -la \"\(path)\"") }
+            return .terminal("ls -la")
+        case "get_working_directory", "pwd":
+            return .terminal("pwd")
+        case "fetch_web":
+            if let url = args["url"] { return .fetchWeb(url) }
+        case "search_web":
+            if let query = args["query"] ?? args["q"] { return .searchWeb(query) }
+        case "open_url", "open_browser":
+            if let url = args["url"] { return .openURL(url) }
+        case "check_server", "check_port":
+            if let portStr = args["port"], let port = Int(portStr) { return .checkServerStatus(port) }
+        default:
+            return nil
         }
         return nil
     }
@@ -3895,11 +4851,24 @@ struct DeveloperRootView: View {
                 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
                 try content.write(to: fileURL, atomically: true, encoding: .utf8)
 
-                // File system monitor will automatically detect and refresh the file list
-
+                DispatchQueue.main.async { self.refreshFileList() }
                 return "Successfully wrote to \(path)"
             } catch {
                 return "Error writing file: \(error.localizedDescription)"
+            }
+
+        case .createDirectory(let path):
+            if path.contains("..") && safetyEnabled { return "Error: Path traversal blocked by Safety Mode." }
+
+            let dirURL = path.hasPrefix("/")
+                ? URL(fileURLWithPath: path).standardized
+                : workingDirectory.appendingPathComponent(path).standardized
+            do {
+                try FileManager.default.createDirectory(at: dirURL, withIntermediateDirectories: true)
+                DispatchQueue.main.async { self.refreshFileList() }
+                return "Created directory: \(dirURL.lastPathComponent)"
+            } catch {
+                return "Error creating directory: \(error.localizedDescription)"
             }
             
         case .fetchWeb(let urlString):
@@ -4171,6 +5140,9 @@ struct DeveloperRootView: View {
             // Don't show output for file writes - success message is sufficient
             return false
 
+        case .createDirectory(_):
+            return false
+
         case .fetchWeb(_):
             // Don't show output for web fetches - content will be in assistant's response
             return false
@@ -4194,6 +5166,9 @@ struct DeveloperRootView: View {
 struct MessageBubble: View {
     let message: ChatMessage
     var requestStatus: String = ""
+    var isActiveInference: Bool = false
+    var onApprove: (() -> Void)? = nil
+    var onReject: (() -> Void)? = nil
     @State private var isOutputExpanded: Bool = false
     @Environment(\.colorScheme) var colorScheme
     
@@ -4285,13 +5260,13 @@ struct MessageBubble: View {
                             HStack(spacing: 8) {
                                 ProgressView()
                                     .controlSize(.small)
-                                if !requestStatus.isEmpty {
-                                    Text(requestStatus)
-                                        .font(.system(size: 13))
-                                        .foregroundStyle(.secondary)
-                                }
+                                Text(requestStatus.isEmpty ? "Working…" : requestStatus)
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(.secondary)
                             }
-                            .padding(12)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 10)
+                            .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                         } else if isToolCall(message.content) {
                             // RENDER TOOL CALL
                             ToolCallBadge(content: message.content)
@@ -4301,9 +5276,57 @@ struct MessageBubble: View {
                                 ToolExecutionBadge(action: toolAction, output: message.toolOutput)
                             }
 
+                            // APPROVAL UI for Agent mode
+                            if let pending = message.pendingToolAction {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text("Grok wants to perform this action:")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+
+                                    Text(pending.description)
+                                        .font(.system(size: 13, design: .monospaced))
+                                        .padding(8)
+                                        .background(Color.yellow.opacity(0.15))
+                                        .cornerRadius(6)
+
+                                    HStack {
+                                        Button("Approve & Run") {
+                                            onApprove?()
+                                        }
+                                        .buttonStyle(.borderedProminent)
+                                        .tint(.green)
+
+                                        Button("Reject") {
+                                            onReject?()
+                                        }
+                                        .buttonStyle(.bordered)
+                                    }
+                                }
+                                .padding(.top, 6)
+                            }
+
                             // RICH MARKDOWN CONTENT
                             if !message.content.isEmpty {
                                 MarkdownView(content: message.content)
+                            }
+
+                            let activityLines = AgentActivityLine.visibleLines(
+                                from: message.activityLines,
+                                isLive: isActiveInference
+                            )
+                            if !activityLines.isEmpty {
+                                AgentActivityFeedView(
+                                    lines: activityLines,
+                                    isLive: isActiveInference
+                                )
+                            }
+
+                            if !requestStatus.isEmpty, isActiveInference {
+                                Label(requestStatus, systemImage: "ellipsis.circle")
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(.secondary)
+                                    .labelStyle(.titleAndIcon)
+                                    .padding(.top, 2)
                             }
                             
                             // Footer: Copy Button & Model Info
@@ -4635,8 +5658,6 @@ struct SyntaxHighlightedText: View {
         let stringColor = Color(red: 0.9, green: 0.5, blue: 0.4)       // Orange for strings
         let commentColor = Color(red: 0.5, green: 0.5, blue: 0.5)      // Gray for comments
         let numberColor = Color(red: 0.6, green: 0.8, blue: 0.9)       // Cyan for numbers
-        let functionColor = Color(red: 0.4, green: 0.8, blue: 0.6)     // Green for functions
-        let typeColor = Color(red: 0.4, green: 0.7, blue: 0.9)         // Blue for types
 
         // Language-specific keywords
         let keywords: [String]
@@ -4784,6 +5805,51 @@ struct ToolCallBadge: View {
 }
 
 // MARK: - Tool Execution Badge
+
+struct AgentActivityFeedView: View {
+    let lines: [AgentActivityLine]
+    var isLive: Bool = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(Array(lines.enumerated()), id: \.element.id) { index, line in
+                let isLast = index == lines.count - 1
+                let showSpinner = isLive && isLast && line.isInProgress
+                HStack(alignment: .center, spacing: 8) {
+                    Group {
+                        if showSpinner {
+                            ProgressView()
+                                .controlSize(.mini)
+                        } else {
+                            Image(systemName: line.isInProgress ? line.icon : "checkmark.circle.fill")
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundStyle(line.isInProgress ? Color.accentColor : Color.green)
+                        }
+                    }
+                    .frame(width: 16, height: 16)
+
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(line.title)
+                            .font(.system(size: 12, weight: .medium))
+                        if let detail = line.detail, !detail.isEmpty {
+                            Text(detail)
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                                .textSelection(.enabled)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            }
+        }
+        .padding(.top, 4)
+    }
+}
+
 struct ToolExecutionBadge: View {
     let action: String
     let output: String?
@@ -4999,29 +6065,199 @@ struct LockedView: View {
     var onUnlock: () -> Void
     
     var body: some View {
-        VStack(spacing: 20) {
-            Image(systemName: "lock.circle.fill")
-                .font(.system(size: 60))
-                .foregroundStyle(.secondary)
-            
-            Text("Enter Grok API Key")
-                .font(.title2)
-                .bold()
-                
-            SecureField("xAI API Key", text: $apiKey)
-                .textFieldStyle(.roundedBorder)
-                .frame(width: 300)
-                .onSubmit(onUnlock)
-            
-            Button("Unlock") {
-                onUnlock()
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(apiKey.isEmpty)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        GrokBuildOnboardingView(
+            authManager: GrokBuildAuthManager.shared,
+            apiKey: $apiKey,
+            onUnlock: onUnlock
+        )
     }
 }
+
+// MARK: - Grok Build onboarding (CLI OAuth primary)
+
+struct GrokBuildOnboardingView: View {
+    @ObservedObject var authManager: GrokBuildAuthManager
+    @Binding var apiKey: String
+    var onUnlock: () -> Void
+    @State private var showingAPIKey = false
+    
+    var body: some View {
+        VStack(spacing: 28) {
+            GrokLogoView(size: 48)
+            
+            VStack(spacing: 8) {
+                Text("Sign in to Grok Build")
+                    .font(.title)
+                    .fontWeight(.bold)
+                Text("Use the same login as the Grok CLI and VS Code extension — Super Heavy access, no API key required.")
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 440)
+            }
+            
+            VStack(spacing: 12) {
+                Button {
+                    authManager.launchCLILogin()
+                } label: {
+                    Label("Sign in with Grok CLI", systemImage: "terminal")
+                        .font(.headline)
+                        .frame(minWidth: 280)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.orange)
+                
+                Button {
+                    if authManager.importFromGrokBuildCLI() {
+                        onUnlock()
+                    }
+                } label: {
+                    Label("Continue with Grok Build", systemImage: "arrow.right.circle.fill")
+                        .frame(minWidth: 280)
+                }
+                .buttonStyle(.bordered)
+                .disabled(!authManager.hasCLISessionOnDisk)
+            }
+            
+            if let error = authManager.lastAuthError {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 400)
+            }
+            
+            Divider().frame(width: 220)
+            
+            Button("Use API key instead (console.x.ai)") {
+                showingAPIKey = true
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            
+            Text("Recommended: `grok login` writes to ~/.grok/auth.json — same file this app reads.")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 420)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding()
+        .sheet(isPresented: $showingAPIKey) {
+            GrokBuildAPIKeySheet(apiKey: $apiKey, onSave: {
+                showingAPIKey = false
+                onUnlock()
+            })
+        }
+    }
+}
+
+struct GrokBuildAPIKeySheet: View {
+    @Binding var apiKey: String
+    var onSave: () -> Void
+    @Environment(\.dismiss) private var dismiss
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("API Key (fallback)")
+                .font(.title2.bold())
+            Text("Use a key from console.x.ai if you prefer not to use Grok Build OAuth.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            
+            SecureField("xai-...", text: $apiKey)
+                .textFieldStyle(.roundedBorder)
+            
+            HStack {
+                Button("Cancel") { dismiss() }
+                Spacer()
+                Button("Save & Continue") {
+                    if !apiKey.isEmpty {
+                        KeychainHelper.shared.saveAPIKey(apiKey)
+                        GrokBuildAuthManager.shared.signOut()
+                        onSave()
+                        dismiss()
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(apiKey.isEmpty)
+            }
+        }
+        .padding(24)
+        .frame(width: 420)
+    }
+}
+
+// MARK: - Grok Build Continue Prompt (Primary seamless path)
+
+struct GrokBuildContinuePrompt: View {
+    var session: GrokBuildSession
+    var onContinue: () -> Void
+    var fallbackAPIKeyPrompt: () -> Void
+    
+    var body: some View {
+        VStack(spacing: 24) {
+            GrokLogoView(size: 56)
+            
+            VStack(spacing: 8) {
+                Text("Grok Build Login Found")
+                    .font(.title)
+                    .fontWeight(.bold)
+                
+                if let email = session.email {
+                    Text(email)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                
+                if session.isSuperHeavy {
+                    Text("Super Heavy (Tier 5)")
+                        .font(.caption.weight(.semibold))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.orange.opacity(0.15))
+                        .foregroundStyle(.orange)
+                        .cornerRadius(6)
+                }
+                
+                Text("Continue with your existing Grok CLI login for full Grok Build access.")
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 420)
+            }
+            
+            Button(action: onContinue) {
+                Label("Continue with Grok Build", systemImage: "arrow.right.circle.fill")
+                    .font(.headline)
+                    .frame(minWidth: 260)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.orange)
+            
+            Divider()
+                .frame(width: 200)
+            
+            VStack(spacing: 6) {
+                Text("Or use an API key")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                
+                Button("Enter API Key (console.x.ai)") {
+                    fallbackAPIKeyPrompt()
+                }
+                .buttonStyle(.bordered)
+            }
+            
+            Text("Grok Build OAuth = Super Heavy limits • API Key = standard limits")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding()
+    }
+}
+
 
 struct HeroView: View {
     let workingDirectory: URL
@@ -5029,12 +6265,10 @@ struct HeroView: View {
     
     var body: some View {
         VStack(spacing: 24) {
-            Image(systemName: "terminal")
-                .font(.system(size: 60))
-                .foregroundStyle(.gray.opacity(0.3))
+            GrokLogoView(size: 60, opacity: 0.4)
             
             VStack(spacing: 8) {
-                Text("Grok Code")
+                Text("Grok Build")
                     .font(.title)
                     .fontWeight(.bold)
                 Text("AI Developer Agent")

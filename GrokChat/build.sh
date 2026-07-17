@@ -1,17 +1,25 @@
 #!/bin/bash
 
-# Build script for GrokChat macOS app
+# SwiftPM build script for the Grok macOS app.
+#
+# Produces a bare-bones Grok.app bundle from `swift build` for quick local
+# iteration. For a signed/notarized DMG, use build-dmg.sh (which drives
+# xcodebuild against GrokApp.xcodeproj so Sparkle and asset catalogs link
+# correctly).
 
-echo "Building GrokChat..."
+set -e
+
+echo "Building Grok..."
 
 # Clean previous builds
 rm -rf .build
 
-# Build the app
+# Build the app (product name in Package.swift is "Grok", so the binary
+# emitted by SwiftPM is .build/release/Grok — not .build/release/GrokChat)
 swift build -c release
 
 # Create app bundle structure
-APP_NAME="GrokChat"
+APP_NAME="Grok"
 APP_BUNDLE="$APP_NAME.app"
 CONTENTS_DIR="$APP_BUNDLE/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
@@ -24,31 +32,34 @@ rm -rf "$APP_BUNDLE"
 mkdir -p "$MACOS_DIR"
 mkdir -p "$RESOURCES_DIR"
 
-# Copy executable
-cp .build/release/GrokChat "$MACOS_DIR/$APP_NAME"
+# Copy executable (SwiftPM names the binary after the product, not the target)
+cp ".build/release/$APP_NAME" "$MACOS_DIR/$APP_NAME"
 
-# Create Info.plist
+# Create Info.plist — keep values in sync with Sources/Info.plist so the
+# SwiftPM-built bundle behaves the same as the Xcode-built one.
 cat > "$CONTENTS_DIR/Info.plist" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>CFBundleExecutable</key>
-    <string>GrokChat</string>
+    <string>$APP_NAME</string>
     <key>CFBundleIdentifier</key>
-    <string>com.yourcompany.grokchat</string>
+    <string>com.xai.Grok</string>
     <key>CFBundleName</key>
-    <string>GrokChat</string>
+    <string>$APP_NAME</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0</string>
+    <string>1.0.4</string>
     <key>CFBundleVersion</key>
     <string>1</string>
     <key>LSMinimumSystemVersion</key>
-    <string>13.0</string>
+    <string>14.0</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
     <key>NSAppTransportSecurity</key>
     <dict>
         <key>NSAllowsArbitraryLoads</key>

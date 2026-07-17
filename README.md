@@ -45,7 +45,7 @@ Access all available Grok models through the xAI API:
 | **Grok 3** | General purpose | 131K tokens |
 | **Grok 3 Mini** | Quick responses, cost-effective | 131K tokens |
 | **Grok 2 Vision** | Image analysis | 128K tokens |
-| **Grok Code** | Programming assistance | 128K tokens |
+| **Grok Build** | Programming assistance | 128K tokens |
 
 ### 💬 Developer Chat Mode
 A powerful chat interface designed for developers:
@@ -125,7 +125,7 @@ See [Build from Source](#-build-from-source) below.
 
 1. Launch **Grok for Mac**
 2. Open **Settings** (⌘,)
-3. Go to the **Grok Code** tab
+3. Go to the **Grok Build** tab
 4. Paste your API key
 5. Close Settings — you're ready!
 
@@ -168,7 +168,7 @@ Access Settings via **⌘,** or the menu bar.
 | **Auto-check for Updates** | Keep the app up to date automatically |
 | **Global Shortcut** | Choose your preferred hotkey |
 
-### Grok Code Tab
+### Grok Build Tab
 | Setting | Description |
 |---------|-------------|
 | **API Key** | Your xAI API key (stored in Keychain) |

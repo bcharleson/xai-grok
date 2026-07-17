@@ -42,8 +42,9 @@ class SearchTextField: NSTextField {
 }
 
 class InputWindow: NSPanel {
-    // Minimum width to fit all mode buttons with proper spacing
-    private static let minWindowWidth: CGFloat = 420
+    // Minimum width to fit all mode buttons with proper spacing (5 buttons now)
+    // 50 + 50 + 60 + 60 + 95 + (4 * 4 spacing) = 331
+    private static let minWindowWidth: CGFloat = 480
     private static let defaultWindowWidth: CGFloat = 700
     private static let windowHeight: CGFloat = 60
 
@@ -138,15 +139,16 @@ class InputWindow: NSPanel {
     private var selectionIndicator: NSView!
 
     // Button layout constants
+    // Order: 𝕏 | Chat | Grok | Build | Grokipedia
     private static let buttonHeight: CGFloat = 32
     private static let buttonSpacing: CGFloat = 4
-    private static let modeButtonWidths: [CGFloat] = [50, 60, 60, 95] // 𝕏, Grok, Code, Grokipedia
+    private static let modeButtonWidths: [CGFloat] = [50, 58, 60, 60, 98] // 𝕏, Chat, Grok, Build, Grokipedia
     private static var modeSwitcherTotalWidth: CGFloat {
         modeButtonWidths.reduce(0, +) + CGFloat(modeButtonWidths.count - 1) * buttonSpacing
     }
 
     private func setupModeSwitcher(in parent: NSView) {
-        let modes = ["𝕏", "Grok", "Code", "Grokipedia"]
+        let modes = ["𝕏", "Chat", "Grok", "Build", "Grokipedia"]
         let buttonHeight = Self.buttonHeight
         let spacing = Self.buttonSpacing
         let buttonWidths = Self.modeButtonWidths
@@ -163,10 +165,10 @@ class InputWindow: NSPanel {
         // Keep centered when window resizes
         modeSwitcherView.autoresizingMask = [.minXMargin, .maxXMargin]
 
-        // Selection indicator (pill background) - starts at first button position
-        let firstButtonWidth = buttonWidths[1] // Grok is default (index 1)
-        let firstButtonX = buttonWidths[0] + spacing // Position after 𝕏 button
-        selectionIndicator = NSView(frame: NSRect(x: firstButtonX, y: 0, width: firstButtonWidth, height: buttonHeight))
+        // Selection indicator (pill background) - starts at Grok button position
+        let grokButtonWidth = buttonWidths[2] // Grok is default (index 2)
+        let grokButtonX = buttonWidths[0] + spacing + buttonWidths[1] + spacing // Position after 𝕏 and Chat.X buttons
+        selectionIndicator = NSView(frame: NSRect(x: grokButtonX, y: 0, width: grokButtonWidth, height: buttonHeight))
         selectionIndicator.wantsLayer = true
         selectionIndicator.layer?.cornerRadius = 8
         selectionIndicator.layer?.cornerCurve = .continuous
@@ -179,9 +181,28 @@ class InputWindow: NSPanel {
         selectionIndicator.layer?.shadowOpacity = 1
         modeSwitcherView.addSubview(selectionIndicator)
 
-        // Create mode buttons with variable widths
+        // Icon + label configuration for the floating mode switcher
+        // Using the exact same graphic logos as the previous icon-only version + words
+        let icons: [String?] = [
+            nil,                                    // 0: 𝕏 (typography only)
+            "bubble.left.and.bubble.right.fill",    // 1: Chat bubbles
+            nil,                                    // 2: Grok - use custom MenuBarIcon below
+            "chevron.left.forwardslash.chevron.right", // 3: Build (</> style)
+            "book.closed.fill"                      // 4: Grokipedia book
+        ]
+        let displayTitles = ["𝕏", "Chat", "Grok", "Build", "Grokipedia"]
+        let toolTips = [
+            "X · Home feed",
+            "Chat · chat.x.com",
+            "Grok · grok.com",
+            "Grok Build · local coding agent",
+            "Grokipedia · knowledge wiki"
+        ]
+        let symbolConfig = NSImage.SymbolConfiguration(pointSize: 12, weight: .semibold)
+
+        // Create mode buttons with variable widths (icon + label)
         var xOffset: CGFloat = 0
-        for (index, title) in modes.enumerated() {
+        for (index, _) in modes.enumerated() {
             let buttonWidth = buttonWidths[index]
             let button = ModeButton(frame: NSRect(
                 x: xOffset,
@@ -189,8 +210,38 @@ class InputWindow: NSPanel {
                 width: buttonWidth,
                 height: buttonHeight
             ))
-            button.title = title
-            button.font = .systemFont(ofSize: 14, weight: index == 1 ? .medium : .regular)
+
+            let iconName = icons[index]
+            let title = displayTitles[index]
+
+            if index == 0 {
+                button.title = "𝕏"
+                button.font = .systemFont(ofSize: 14, weight: .black)
+            } else if index == 2 {
+                // Grok — MenuBarIcon at native resolution (no tiny rasterization)
+                if let grokIcon = NSImage(named: "MenuBarIcon") {
+                    let icon = grokIcon.copy() as! NSImage
+                    icon.isTemplate = true
+                    button.image = icon
+                    button.imageScaling = .scaleProportionallyDown
+                    button.imagePosition = .imageLeading
+                    button.title = " " + title
+                } else {
+                    button.title = title
+                }
+                button.font = .systemFont(ofSize: 12, weight: .medium)
+            } else if let iconName = iconName,
+                      let base = NSImage(systemSymbolName: iconName, accessibilityDescription: title),
+                      let img = base.withSymbolConfiguration(symbolConfig) {
+                button.image = img
+                button.imagePosition = .imageLeading
+                button.title = " " + title   // small leading space for visual balance
+                button.font = .systemFont(ofSize: 12, weight: .semibold)
+            } else {
+                button.title = title
+                button.font = .systemFont(ofSize: 12, weight: .regular)
+            }
+
             button.isBordered = false
             button.bezelStyle = .inline
             button.tag = index
@@ -198,9 +249,12 @@ class InputWindow: NSPanel {
             button.action = #selector(modeTapped(_:))
             button.wantsLayer = true
             button.layer?.cornerRadius = 8
+            button.toolTip = toolTips[index]
+            button.setAccessibilityLabel(title == "𝕏" ? "X" : title)
+            button.setAccessibilityHelp(toolTips[index])
 
-            // Style based on selection
-            if index == 1 { // Grok is default
+            // Style based on selection (Grok default)
+            if index == 2 {
                 button.contentTintColor = .labelColor
             } else {
                 button.contentTintColor = .secondaryLabelColor
@@ -212,16 +266,16 @@ class InputWindow: NSPanel {
             xOffset += buttonWidth + spacing
         }
 
-        // Position indicator on default selection (Grok = index 1)
-        updateSelectionIndicator(to: 1, animated: false)
+        // Position indicator on default selection (Grok = index 2)
+        updateSelectionIndicator(to: 2, animated: false)
 
         parent.addSubview(modeSwitcherView)
 
         // Hidden popup for compatibility
         modeSelector = NSPopUpButton(frame: .zero)
         modeSelector.isHidden = true
-        modeSelector.addItems(withTitles: modes)
-        modeSelector.selectItem(at: 1)
+        modeSelector.addItems(withTitles: displayTitles)
+        modeSelector.selectItem(at: 2)
         parent.addSubview(modeSelector)
     }
 
@@ -262,11 +316,13 @@ class InputWindow: NSPanel {
         // Update internal state
         modeSelector.selectItem(at: index)
 
+        // Order: 𝕏 (0), Chat.X (1), Grok (2), Code (3), Grokipedia (4)
         switch index {
         case 0: selectedMode = .xTwitter
-        case 1: selectedMode = .chat
-        case 2: selectedMode = .developer
-        case 3: selectedMode = .grokipedia
+        case 1: selectedMode = .chatX
+        case 2: selectedMode = .chat
+        case 3: selectedMode = .developer
+        case 4: selectedMode = .grokipedia
         default: selectedMode = .chat
         }
 
@@ -293,6 +349,7 @@ class InputWindow: NSPanel {
         // Update placeholder
         switch selectedMode {
         case .xTwitter: textField.placeholderString = "Search X..."
+        case .chatX: textField.placeholderString = "Chat with Grok..."
         case .chat: textField.placeholderString = "Ask Grok..."
         case .developer: textField.placeholderString = "What do you want to build?"
         case .grokipedia: textField.placeholderString = "Search Grokipedia..."
@@ -307,13 +364,15 @@ class InputWindow: NSPanel {
         modeSwitcherView.isHidden = false
         modeSwitcherView.alphaValue = 1
     }
-    
+
     @objc func modeChanged(_ sender: NSPopUpButton) {
+        // Order: 𝕏 (0), Chat.X (1), Grok (2), Code (3), Grokipedia (4)
         switch sender.indexOfSelectedItem {
         case 0: selectedMode = .xTwitter
-        case 1: selectedMode = .chat
-        case 2: selectedMode = .developer
-        case 3: selectedMode = .grokipedia
+        case 1: selectedMode = .chatX
+        case 2: selectedMode = .chat
+        case 3: selectedMode = .developer
+        case 4: selectedMode = .grokipedia
         default: selectedMode = .chat
         }
     }
