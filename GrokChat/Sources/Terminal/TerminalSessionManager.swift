@@ -51,7 +51,9 @@ final class TerminalSessionManager: ObservableObject {
     private var sessionCaptureWork: [UUID: DispatchWorkItem] = [:]
     private var remountTimestamps: [UUID: [Date]] = [:]
     private var launchedAt: [UUID: Date] = [:]
-    private let idleQuietInterval: TimeInterval = 2.0
+    /// How long after last *meaningful* PTY output before clearing the spinner.
+    /// Keep short so collapsed projects drop the wheel soon after the agent pauses.
+    private let idleQuietInterval: TimeInterval = 2.5
 
     init() {
         outputObserver = NotificationCenter.default.addObserver(
@@ -331,6 +333,11 @@ final class TerminalSessionManager: ObservableObject {
         guard let session = sessions[sessionId] else { return }
         let threadId = session.threadId
         let projectPath = session.projectPath
+
+        // Process gone → spinner must stop immediately (don't wait for idle timer).
+        busyThreadIds.remove(threadId)
+        idleWorkItems[threadId]?.cancel()
+        idleWorkItems[threadId] = nil
 
         // Capture session id from disk before remount when possible.
         if let newest = GrokSessionResolver.newestSessionID(forProjectPath: projectPath) {

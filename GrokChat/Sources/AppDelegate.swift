@@ -954,6 +954,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         case .chat:
             webView.frame = mainContainerView.bounds
             mainContainerView.addSubview(webView)
+            // Recover from a cancelled/blank load (e.g. prior Build deep-link hijack).
+            let urlString = webView.url?.absoluteString ?? ""
+            if urlString.isEmpty || urlString == "about:blank" {
+                if let url = URL(string: "https://grok.com") {
+                    webView.load(URLRequest(url: url))
+                }
+            }
             window.makeFirstResponder(webView)
         case .developer:
             if let devView = devViewController?.view {
@@ -1488,8 +1495,11 @@ extension AppDelegate: WKUIDelegate {
 // MARK: - WKNavigationDelegate for downloads
 extension AppDelegate: WKNavigationDelegate {
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, preferences: WKWebpagePreferences, decisionHandler: @escaping (WKNavigationActionPolicy, WKWebpagePreferences) -> Void) {
-        // 0. Web Grok Build / CLI install → native Build tab (already on Mac)
-        if let url = navigationAction.request.url {
+        // 0. Explicit user clicks on web Grok Build / CLI install → native Build.
+        // Only intercept linkActivated navigations — never cancel SPA/bootstrap loads
+        // (that left the Grok tab stuck on a blank white page).
+        if navigationAction.navigationType == .linkActivated,
+           let url = navigationAction.request.url {
             let host = url.host?.lowercased() ?? ""
             let path = url.path.lowercased()
             let absolute = url.absoluteString.lowercased()

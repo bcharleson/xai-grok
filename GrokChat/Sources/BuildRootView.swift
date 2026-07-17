@@ -213,7 +213,6 @@ struct BuildRootView: View {
                 BuildUtilityPane(
                     mode: mode,
                     store: store,
-                    terminalContent: AnyView(terminalUtilityContent),
                     onSelectMode: openUtilityPane,
                     onClose: { utilityPaneMode = nil }
                 )
@@ -412,10 +411,6 @@ struct BuildRootView: View {
     }
 
     private func openUtilityPane(_ mode: BuildUtilityPaneMode) {
-        if let project = store.selectedProject,
-           let thread = store.selectedThread ?? project.threads.first {
-            mountAndActivate(thread: thread, project: project)
-        }
         utilityPaneMode = mode
     }
 
@@ -1078,7 +1073,7 @@ private struct BuildNativeAgentPane: View {
                 Image(systemName: "terminal")
             }
             .buttonStyle(.borderless)
-            .help("Open Grok terminal")
+            .help("Open shell terminal")
 
             Button(action: onOpenBrowser) {
                 Image(systemName: "globe")
@@ -1377,7 +1372,6 @@ private struct BuildNativeAgentPane: View {
 private struct BuildUtilityPane: View {
     let mode: BuildUtilityPaneMode
     @ObservedObject var store: WorkspaceStore
-    let terminalContent: AnyView
     let onSelectMode: (BuildUtilityPaneMode) -> Void
     let onClose: () -> Void
 
@@ -1442,12 +1436,95 @@ private struct BuildUtilityPane: View {
         case .review:
             BuildReviewPane(project: store.selectedProject)
         case .terminal:
-            terminalContent
+            // Real interactive shell in the project cwd — not the Grok agent TUI.
+            BuildShellTerminalPane(project: store.selectedProject)
         case .browser:
             BuildBrowserPane(project: store.selectedProject)
         case .files:
             BuildFilesPane(project: store.selectedProject)
         }
+    }
+}
+
+/// Interactive login shell rooted at the selected project (zsh/bash via $SHELL).
+private struct BuildShellTerminalPane: View {
+    let project: AgentProject?
+    @State private var sessionId = UUID()
+    @State private var boundPath: String?
+
+    private var shellExecutable: String {
+        if let shell = ProcessInfo.processInfo.environment["SHELL"],
+           FileManager.default.isExecutableFile(atPath: shell) {
+            return shell
+        }
+        if FileManager.default.isExecutableFile(atPath: "/bin/zsh") { return "/bin/zsh" }
+        return "/bin/bash"
+    }
+
+    var body: some View {
+        Group {
+            if let project, WorkspaceStore.directoryExists(at: project.path) {
+                VStack(spacing: 0) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "terminal")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.secondary)
+                        Text(shellExecutable)
+                            .font(.system(size: 11, weight: .medium, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                        Text("·")
+                            .foregroundStyle(.tertiary)
+                        Text(project.path)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer(minLength: 0)
+                        Button {
+                            remountShell(for: project.path)
+                        } label: {
+                            Image(systemName: "arrow.clockwise")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Restart shell")
+                    }
+                    .padding(.horizontal, 12)
+                    .frame(height: 32)
+                    Divider()
+                    GrokGhosttyTerminalView(
+                        sessionId: sessionId,
+                        executable: shellExecutable,
+                        arguments: ["-l"],
+                        workingDirectory: project.path,
+                        isActive: true,
+                        isVisibleInUI: true
+                    )
+                }
+                .onAppear { bind(to: project.path) }
+                .onChange(of: project.path) { _, newPath in
+                    bind(to: newPath)
+                }
+            } else {
+                utilityEmptyState(
+                    icon: "terminal",
+                    title: "Open a project",
+                    subtitle: "Terminal opens an interactive shell in the selected folder."
+                )
+            }
+        }
+    }
+
+    private func bind(to path: String) {
+        guard boundPath != path else { return }
+        remountShell(for: path)
+    }
+
+    private func remountShell(for path: String) {
+        GrokGhosttyTerminalNSView.prepareForReplacement(sessionId: sessionId)
+        sessionId = UUID()
+        boundPath = path
     }
 }
 

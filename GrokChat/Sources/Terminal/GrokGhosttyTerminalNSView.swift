@@ -122,7 +122,10 @@ final class GrokGhosttyTerminalNSView: NSView, LocalProcessTerminalViewDelegate 
         }
 
         guard FileManager.default.isExecutableFile(atPath: executable) else {
-            showInlineError("Grok CLI not found at:\n\(executable)")
+            let label = (executable as NSString).lastPathComponent.lowercased().contains("grok")
+                ? "Grok CLI not found at:\n\(executable)"
+                : "Executable not found:\n\(executable)"
+            showInlineError(label)
             return
         }
 
@@ -198,8 +201,14 @@ final class GrokGhosttyTerminalNSView: NSView, LocalProcessTerminalViewDelegate 
     func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
 
     func processTerminated(source: TerminalView, exitCode: Int32?) {
-        // Harness remounts via TerminalSessionManager with fresh CLI path + resume args.
-        showStatusOverlay("Session ended — restoring…")
+        let isGrokAgent = (executable as NSString).lastPathComponent.lowercased().contains("grok")
+        if isGrokAgent {
+            // Harness remounts via TerminalSessionManager with fresh CLI path + resume args.
+            showStatusOverlay("Session ended — restoring…")
+        } else {
+            let code = exitCode.map { String($0) } ?? "?"
+            showStatusOverlay("Shell exited (\(code)) — use Restart to open a new shell")
+        }
         NotificationCenter.default.post(
             name: .grokTerminalProcessTerminated,
             object: nil,
@@ -277,15 +286,49 @@ private final class GrokActivityAwareTerminalView: LocalProcessTerminalView {
 
     override func dataReceived(slice: ArraySlice<UInt8>) {
         super.dataReceived(slice: slice)
-        guard !slice.isEmpty else { return }
-        // Throttle: TUI redraws are chatty; ~8Hz is enough for spinner UX.
+        // Ignore cursor blink / pure CSI redraws — those were keeping project
+        // spinners stuck forever on idle Grok Build TUIs.
+        guard Self.looksLikeAgentActivity(slice) else { return }
+        // Throttle: real agent streams are chatty; ~5Hz is enough for spinner UX.
         let now = CFAbsoluteTimeGetCurrent()
-        guard now - lastPost >= 0.12 else { return }
+        guard now - lastPost >= 0.2 else { return }
         lastPost = now
         NotificationCenter.default.post(
             name: .grokTerminalDidReceiveOutput,
             object: nil,
             userInfo: ["sessionId": sessionId]
         )
+    }
+
+    /// True when the chunk contains enough printable text to imply agent work,
+    /// not just ANSI cursor/style housekeeping.
+    private static func looksLikeAgentActivity(_ slice: ArraySlice<UInt8>) -> Bool {
+        var printable = 0
+        var i = slice.startIndex
+        while i < slice.endIndex {
+            let byte = slice[i]
+            i = slice.index(after: i)
+
+            if byte == 0x1B { // ESC — skip CSI / OSC-ish sequences
+                while i < slice.endIndex {
+                    let c = slice[i]
+                    i = slice.index(after: i)
+                    // CSI/OSC final byte in the ASCII @–~ range.
+                    if (0x40...0x7E).contains(c) { break }
+                }
+                continue
+            }
+
+            // Whitespace / BEL / backspace — not activity by themselves.
+            if byte == 7 || byte == 8 || byte == 9 || byte == 10 || byte == 13 {
+                continue
+            }
+
+            if (32..<127).contains(byte) || byte >= 0xC0 {
+                printable += 1
+                if printable >= 4 { return true }
+            }
+        }
+        return false
     }
 }
