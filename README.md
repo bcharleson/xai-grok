@@ -225,6 +225,16 @@ open ~/Library/Developer/Xcode/DerivedData/*/Build/Products/Release/
 ./build-dmg.sh
 ```
 
+### Shipping a Sparkle update (production)
+
+Follow the exact flow that shipped **1.0.89**:
+
+- **Full checklist:** [`cursor/RELEASE_WORKFLOW.md`](cursor/RELEASE_WORKFLOW.md)
+- **Short pointer:** [`GrokChat/RELEASE_WORKFLOW.md`](GrokChat/RELEASE_WORKFLOW.md)
+- **After notarization:** `GrokChat/scripts/ship-sparkle-release.sh`
+
+Critical: never run bare `generate_keys` on a release Mac. Confirm the production Sparkle public key (`a+vXV7…`) before every ship.
+
 ---
 
 ## 📁 Project Structure

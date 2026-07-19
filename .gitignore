@@ -10,17 +10,32 @@
 # =============================================================================
 
 # Sparkle Auto-Update Infrastructure (PRIVATE)
-# These files are essential for the auto-update system and must remain private.
-# Users who clone the repo will need to set up their own update infrastructure.
+# Tools + feed live outside this public repo (or stay local-only).
+# SUPublicEDKey in Info.plist is the PUBLIC half — safe to commit.
+# The private EdDSA key must NEVER appear in this repository.
 GrokChat/bin/
 GrokChat/appcast.xml
 GrokChat/release.sh
+GrokChat/deploy-notarized.sh
+GrokChat/scripts/deploy-release.sh
 
 # Sparkle Signing Keys (CRITICAL - NEVER COMMIT)
+# Covers exports from generate_keys -x and any backups.
 eddsa_private_key
+eddsa_private_key*
 **/eddsa_private_key
+**/eddsa_private_key*
+*eddsa_private*
 **/dsa_priv.pem
 **/sparkle_private_key*
+*.NEW_ROTATED_BACKUP
+ExportOptions*.plist
+!GrokChat/Release/ExportOptions-Upload.plist
+
+# Local / optional native deps (broken symlinks; never ship)
+GrokChat/GhosttyKit.xcframework
+GrokChat/Resources/ghostty
+GrokChat/Resources/terminfo
 
 # Code Signing Certificates
 *.p12
