@@ -427,7 +427,7 @@
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 54;
+				CURRENT_PROJECT_VERSION = 55;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = CC989JZCNV;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -441,7 +441,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.0.87;
+				MARKETING_VERSION = 1.0.88;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-lc++",
@@ -470,7 +470,7 @@
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 54;
+				CURRENT_PROJECT_VERSION = 55;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = CC989JZCNV;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -484,7 +484,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.0.87;
+				MARKETING_VERSION = 1.0.88;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-lc++",
